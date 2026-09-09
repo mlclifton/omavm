@@ -83,6 +83,10 @@ Download the Omarchy ISO from <https://omarchy.org>, then either pass it with
 ./manage-agent-vm.sh build --iso ~/Downloads/omarchy.iso
 ```
 
+To throw away a part-finished install and start over, use `rebuild` with the
+same arguments. Do not use `reset` for this: it restores a frozen base image,
+which does not exist until step 5.
+
 This boots the installer on the **build network**, which has real NAT to the
 internet because the Omarchy installer needs it. A display window opens
 automatically.
@@ -236,8 +240,9 @@ lists exactly when.
   whole host.
 - **The build network is a real hole.** It is opened explicitly, closed by
   `freeze` and `close-build`, and `verify-isolation.sh` fails while it is open.
-- **Clipboard and file transfer are disabled** in the domain XML. They are
-  host-to-guest data channels that bypass every network control. If you enable
-  them for convenience, you have widened the sandbox.
+- **Clipboard and file transfer follow the network.** They are on during a
+  build, where you need to paste commands and no agent is running, and off on
+  the sandbox network, where they would be host-to-guest data channels that
+  bypass every network control. Turning them on for the sandbox widens it.
 - **The base image is only as trustworthy as the install.** Everything you
   installed before sealing is in every reset, forever.

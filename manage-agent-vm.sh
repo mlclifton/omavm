@@ -4,6 +4,7 @@
 #
 #   init      Create the writable build disk.
 #   build     Boot the installer on the NAT build network, with a display.
+#   rebuild   Throw away a part-finished install and start it over.
 #   seal      Provision the installed guest for automation. Guest must be running.
 #   freeze    Turn the sealed build disk into the read-only base image.
 #   reset     Discard all guest state and return to the base. The common one.
@@ -115,6 +116,14 @@ render_domain() {
     local disk="$1" network="$2" iso="${3:-}"
     local cdrom="" mem_kib=$((VM_MEM_MB * 1024))
 
+    # Clipboard sharing follows the network rather than being a global setting.
+    # It is a host-to-guest channel that bypasses the network controls, so it
+    # has no place on the sandbox network. During a build there is no agent yet
+    # and you need to paste commands into the guest, so leaving it off there
+    # just makes the install painful for no security gain.
+    local clipboard="no"
+    [[ "$network" == "$BUILD_NET" ]] && clipboard="yes"
+
     if [[ -n "$iso" ]]; then
         cdrom=$(cat <<CDROM
 
@@ -144,13 +153,14 @@ CDROM
         -v code="$OVMF_CODE" -v nvram="$NVRAM_FILE" -v vars="$OVMF_VARS_TEMPLATE" \
         -v disk="$disk" -v net="$network" -v mac="$GUEST_MAC" -v node="$RENDER_NODE" \
         -v accel="${ACCEL3D:-yes}" -v gl="${GL_ENABLE:-yes}" -v cdrom="$cdrom" \
-        -v vw="$VIDEO_WIDTH" -v vh="$VIDEO_HEIGHT" '
+        -v vw="$VIDEO_WIDTH" -v vh="$VIDEO_HEIGHT" -v clip="$clipboard" '
         { gsub(/@VM_NAME@/, vm); gsub(/@VM_MEM_KIB@/, mem); gsub(/@VM_VCPUS@/, vcpus);
           gsub(/@OVMF_CODE@/, code); gsub(/@NVRAM_FILE@/, nvram);
           gsub(/@OVMF_VARS_TEMPLATE@/, vars); gsub(/@DISK_IMAGE@/, disk);
           gsub(/@NETWORK@/, net); gsub(/@GUEST_MAC@/, mac); gsub(/@RENDER_NODE@/, node);
           gsub(/@ACCEL3D@/, accel); gsub(/@GL_ENABLE@/, gl);
           gsub(/@VIDEO_WIDTH@/, vw); gsub(/@VIDEO_HEIGHT@/, vh);
+          gsub(/@CLIPBOARD@/, clip);
           if ($0 ~ /@UUID_LINE@/) {
               if (uuid == "") next
               sub(/@UUID_LINE@/, "<uuid>" uuid "</uuid>")
@@ -246,6 +256,15 @@ cmd_init() {
     info "Next: $0 build --iso /path/to/omarchy.iso"
 }
 
+cmd_rebuild() {
+    stage "Discarding the guest and starting the install over"
+    domain_running && $VIRSH destroy "$VM_NAME" >/dev/null
+    sudo rm -f "$WORK_IMAGE" "$NVRAM_FILE"
+    ok "Removed the build disk and the UEFI variables"
+    cmd_init
+    cmd_build "$@"
+}
+
 cmd_build() {
     local iso="$OMARCHY_ISO"
     while (( $# )); do
@@ -299,7 +318,7 @@ cmd_seal() {
         -e "s|@PROXY_PORT@|${PROXY_PORT}|g" \
         -e "s|@GATEWAY_PORT@|${GATEWAY_PORT}|g" \
         -e "s|@PUBKEY@|${pubkey}|g" \
-        "$SEAL_SRC" > "${serve_dir}/seal.sh"
+        "$SEAL_SRC" > "${serve_dir}/s"
 
     python3 -m http.server "$SEAL_HTTP_PORT" --bind "$BUILD_HOST_IP" \
         --directory "$serve_dir" &>/dev/null &
@@ -313,7 +332,9 @@ cmd_seal() {
 
     echo
     printf '  %sIn a terminal inside the guest, run this one line:%s\n\n' "$c_bold" "$c_reset"
-    printf '    curl -fsSL http://%s:%s/seal.sh | sudo bash\n\n' "$BUILD_HOST_IP" "$SEAL_HTTP_PORT"
+    printf '    curl -sL %s:%s/s | sudo bash\n\n' "$BUILD_HOST_IP" "$SEAL_HTTP_PORT"
+    info "Clipboard sharing is on during a build, so you can paste this."
+    info "It is off on the sandbox network, where an agent could abuse it."
     info "This script waits until the guest accepts the new SSH key."
 
     if wait_for_ssh "$BUILD_GUEST_IP" 900; then
@@ -507,7 +528,7 @@ main() {
     local cmd="${1:-status}"
     shift || true
     case "$cmd" in
-        init|build|seal|freeze|reset|start|stop|gui|ssh|refresh|status|logs)
+        init|build|rebuild|seal|freeze|reset|start|stop|gui|ssh|refresh|status|logs)
             require_libvirt_access
             "cmd_${cmd}" "$@"
             ;;

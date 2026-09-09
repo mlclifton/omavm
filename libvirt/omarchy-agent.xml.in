@@ -89,14 +89,17 @@
          enabled the display is a local Unix socket and cannot be exported over
          the network. Attach with `manage-agent-vm.sh gui`.
 
-         Clipboard and file transfer are switched off. Both are host-to-guest
-         data channels, and a clipboard shared with an untrusted agent is an
-         exfiltration path that bypasses the network controls entirely. -->
+         Clipboard and file transfer follow the network the guest is on. On the
+         isolated sandbox network they are off: both are host-to-guest data
+         channels, and a clipboard shared with an untrusted agent is an
+         exfiltration path that bypasses every network control. On the build
+         network they are on, because no agent is running yet and you need to
+         paste commands into the installer. -->
     <graphics type='spice'>
       <listen type='none'/>
       <gl enable='@GL_ENABLE@' rendernode='@RENDER_NODE@'/>
-      <clipboard copypaste='no'/>
-      <filetransfer enable='no'/>
+      <clipboard copypaste='@CLIPBOARD@'/>
+      <filetransfer enable='@CLIPBOARD@'/>
       <image compression='off'/>
     </graphics>
 
