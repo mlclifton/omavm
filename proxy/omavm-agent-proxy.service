@@ -1,0 +1,52 @@
+[Unit]
+Description=omavm agent egress proxy (allowlist + credential gateway)
+Documentation=https://github.com/mlclifton/omavm/blob/master/OPERATIONS.md
+# The proxy binds to the sandbox bridge address, so that bridge must exist
+# first. Restart=on-failure covers the case where libvirt has not brought the
+# network up yet at boot.
+After=network.target libvirtd.service
+Wants=libvirtd.service
+
+[Service]
+Type=simple
+User=omavm-proxy
+Group=omavm-proxy
+EnvironmentFile=-/etc/omavm/credentials.env
+ExecStart=/usr/local/lib/omavm/agent-proxy.py \
+    --bind 192.168.100.1 \
+    --proxy-port 8888 \
+    --gateway-port 8889 \
+    --allowlist /etc/omavm/allowlist.conf \
+    --routes /etc/omavm/routes.conf \
+    --log-file /var/log/omavm/agent-proxy.log
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+
+# Hardening. The proxy handles API keys and is reachable by an untrusted guest,
+# so it gets no privileges it does not need.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ReadWritePaths=/var/log/omavm
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# Secrets. The real credentials file lives at /etc/omavm/credentials.env and
+# must never be committed. credentials.env.example is tracked on purpose.
+# ---------------------------------------------------------------------------
+credentials.env
+*.env
+!*.env.example
+secrets/
+
+# SSH key material. The VM keypair belongs in ~/.ssh, but guard against a copy
+# being dropped in the working tree.
+id_*
+*_ed25519
+*_rsa
+*.pem
+*.key
+!**/*.key.example
+
+# ---------------------------------------------------------------------------
+# Disk images, firmware state and installer media. These are large, machine
+# specific, and rebuildable from the scripts.
+# ---------------------------------------------------------------------------
+*.qcow2
+*.qcow2.tmp
+*.img
+*.raw
+*.iso
+*.fd
+*.vars
+nvram/
+
+# ---------------------------------------------------------------------------
+# Generated at runtime. The domain XML is rendered from the template on every
+# define, and the seal script is rendered with a public key baked in.
+# ---------------------------------------------------------------------------
+*.rendered.xml
+omarchy-agent.*.xml
+seal.sh
+build/
+dist/
+
+# Logs
+*.log
+logs/
+
+# ---------------------------------------------------------------------------
+# Local overrides. Copy config/omavm.conf here to change settings without
+# carrying machine specific paths in the tracked config.
+# ---------------------------------------------------------------------------
+config/omavm.local.conf
+.env.local
+
+# ---------------------------------------------------------------------------
+# Editor and OS noise
+# ---------------------------------------------------------------------------
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
+.direnv/
+__pycache__/
+*.py[cod]

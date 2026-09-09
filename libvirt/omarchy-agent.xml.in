@@ -1,0 +1,132 @@
+<!--
+  Domain template for the Omarchy agent guest.
+
+  This file is a template, not a live definition. manage-agent-vm.sh renders it
+  and runs `virsh define` on every start, so the XML in this repository is the
+  single source of truth and hand edits made through virt-manager are
+  discarded rather than silently accumulating.
+
+  Placeholders are the AT-delimited tokens below, substituted by the manage
+  script at define time. They are not spelled out here on purpose: this comment
+  would be rewritten along with the rest of the file, and a stale rendered copy
+  of the placeholder list is worse than no list at all.
+-->
+<domain type='kvm'>
+  <name>@VM_NAME@</name>
+  <memory unit='KiB'>@VM_MEM_KIB@</memory>
+  <currentMemory unit='KiB'>@VM_MEM_KIB@</currentMemory>
+  <vcpu placement='static'>@VM_VCPUS@</vcpu>
+
+  <os firmware='efi'>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <firmware>
+      <feature enabled='no' name='enrolled-keys'/>
+      <feature enabled='no' name='secure-boot'/>
+    </firmware>
+    <loader readonly='yes' type='pflash'>@OVMF_CODE@</loader>
+    <nvram template='@OVMF_VARS_TEMPLATE@'>@NVRAM_FILE@</nvram>
+    <boot dev='hd'/>
+    <boot dev='cdrom'/>
+  </os>
+
+  <features>
+    <acpi/>
+    <apic/>
+    <vmport state='off'/>
+  </features>
+
+  <!-- host-passthrough gives the guest the full 8845HS feature set, which
+       matters for anything the agent runs that is CPU feature gated. The VM is
+       never migrated, so losing migratability costs nothing. -->
+  <cpu mode='host-passthrough' check='none' migratable='off'/>
+
+  <clock offset='utc'>
+    <timer name='rtc' tickpolicy='catchup'/>
+    <timer name='pit' tickpolicy='delay'/>
+    <timer name='hpet' present='no'/>
+  </clock>
+
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+
+  <pm>
+    <suspend-to-mem enabled='no'/>
+    <suspend-to-disk enabled='no'/>
+  </pm>
+
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+
+    <!-- The disk is the copy-on-write overlay during normal runs and the
+         writable build image during a build. Either way the manage script
+         decides; nothing here refers to the read-only base directly. -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' cache='writeback' discard='unmap'/>
+      <source file='@DISK_IMAGE@'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+@CDROM_BLOCK@
+    <controller type='usb' index='0' model='qemu-xhci' ports='8'/>
+    <controller type='pci' index='0' model='pcie-root'/>
+    <controller type='virtio-serial' index='0'/>
+
+    <interface type='network'>
+      <source network='@NETWORK@'/>
+      <mac address='@GUEST_MAC@'/>
+      <model type='virtio'/>
+    </interface>
+
+    <!-- Absolute pointing. A relative PS/2 mouse makes coordinate-based GUI
+         automation unreliable because the guest pointer and the host pointer
+         drift apart; a USB tablet reports absolute positions so a click at
+         (x, y) lands where the agent intended. -->
+    <input type='tablet' bus='usb'/>
+    <input type='keyboard' bus='usb'/>
+
+    <!-- SPICE with GL. <listen type='none'/> is mandatory here: with GL
+         enabled the display is a local Unix socket and cannot be exported over
+         the network. Attach with `manage-agent-vm.sh gui`.
+
+         Clipboard and file transfer are switched off. Both are host-to-guest
+         data channels, and a clipboard shared with an untrusted agent is an
+         exfiltration path that bypasses the network controls entirely. -->
+    <graphics type='spice'>
+      <listen type='none'/>
+      <gl enable='@GL_ENABLE@' rendernode='@RENDER_NODE@'/>
+      <clipboard copypaste='no'/>
+      <filetransfer enable='no'/>
+      <image compression='off'/>
+    </graphics>
+
+    <!-- Enabling 3D makes libvirt select virtio-vga-gl, which is virtio-gpu
+         with virgl plus a VGA compatibility path so the UEFI console and early
+         boot stay visible. To fall back to software rendering after a host
+         mesa update breaks virgl, run the manage script with ACCEL3D=no and
+         GL_ENABLE=no in the environment. See OPERATIONS.md. -->
+    <video>
+      <model type='virtio' heads='1' primary='yes'>
+        <acceleration accel3d='@ACCEL3D@'/>
+      </model>
+    </video>
+
+    <!-- vdagent drives dynamic guest resolution, which is what lets the guest
+         Hyprland session resize to the viewer window. Clipboard sharing stays
+         off at the graphics level above. -->
+    <channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
+
+    <!-- The guest agent gives clean ACPI shutdown and lets the host query
+         guest state without opening any extra network path. -->
+    <channel type='unix'>
+      <target type='virtio' name='org.qemu.guest_agent.0'/>
+    </channel>
+
+    <rng model='virtio'>
+      <backend model='random'>/dev/urandom</backend>
+    </rng>
+
+    <memballoon model='virtio'/>
+  </devices>
+</domain>

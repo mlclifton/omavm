@@ -1,0 +1,36 @@
+<!--
+  agent-sandbox-net: the network the agent VM actually runs on.
+
+  There is deliberately no <forward> element. In libvirt that means an isolated
+  network: the bridge exists, the host has an address on it, and there is no
+  routing, no NAT and no path off the bridge. Default-deny is a property of the
+  network definition itself rather than of firewall rules that could be
+  flushed, reordered or lost across a ufw reload.
+
+  DNS is disabled outright. libvirt still runs dnsmasq here for DHCP, but with
+  DNS switched off the guest has no resolver it can reach. That closes DNS
+  tunnelling, which is otherwise a working exfiltration channel even when every
+  TCP path is blocked. Name resolution happens on the host, inside the proxy,
+  for allowlisted names only.
+-->
+<network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
+  <name>agent-sandbox-net</name>
+  <bridge name='virbr-agent' stp='on' delay='0'/>
+  <mtu size='1500'/>
+  <dns enable='no'/>
+  <ip address='192.168.100.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.100.10' end='192.168.100.10'/>
+      <host mac='52:54:00:a9:e1:10' name='omarchy-agent' ip='192.168.100.10'/>
+    </dhcp>
+  </ip>
+
+  <!-- Send no DNS server in the DHCP lease. Without this dnsmasq still
+       advertises itself as the resolver even with DNS switched off, and every
+       lookup in the guest blocks for the full resolver timeout before failing.
+       Suppressing the option makes resolution fail immediately instead, which
+       is both faster and clearer when an agent hits it. -->
+  <dnsmasq:options>
+    <dnsmasq:option value='dhcp-option=6'/>
+  </dnsmasq:options>
+</network>
