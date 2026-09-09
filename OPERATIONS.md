@@ -24,6 +24,7 @@ below simply does not arise.
 | Guest resolution is wrong or will not follow the window | [Fix the guest resolution](#the-guest-resolution-is-wrong) | Rare |
 | The agent and your cursor are fighting | [Detach the viewer](#the-agent-and-your-cursor-are-fighting) | Whenever it happens |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
+| You changed the agent skill or `omarchy-ui` | [Push the change into the guest](#updating-the-agent-skill) | Whenever you edit it |
 | The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
 | Guest has no IP address at all | [Diagnose a missing lease](#the-guest-never-gets-an-ip-address) | Rare |
@@ -462,6 +463,12 @@ will not have them.
 ./manage-agent-vm.sh ssh -- 'echo $YDOTOOL_SOCKET'
 ```
 
+Or ask the tool itself, which checks every part of the path:
+
+```bash
+./manage-agent-vm.sh ssh -- omarchy-ui doctor
+```
+
 If the unit is missing, the base predates the control kit and needs re-sealing:
 
 ```bash
@@ -483,6 +490,49 @@ rather than just retrying.
 **Note.** A command issued over SSH picks up `YDOTOOL_SOCKET` only through the
 login shell. Run agent commands with `bash -lc` if you are invoking them in a
 way that skips profile scripts.
+
+---
+
+## Updating the agent skill
+
+**Trigger.** You edited `guest/skills/omarchy-ui/SKILL.md` or the `omarchy-ui`
+script and want the guest to have the change.
+
+**Why it needs doing.** The skill is installed into the base image at seal
+time. Editing the repository changes nothing in a running guest, and a `reset`
+would discard anything you copied in by hand.
+
+**For a quick iteration**, copy it into the running guest and try it:
+
+```bash
+scp -i ~/.ssh/omavm_agent_ed25519 \
+    guest/skills/omarchy-ui/scripts/omarchy-ui agent@192.168.100.10:/tmp/
+./manage-agent-vm.sh ssh -- sudo install -m 0755 /tmp/omarchy-ui /usr/local/bin/omarchy-ui
+./manage-agent-vm.sh ssh -- omarchy-ui doctor
+```
+
+That survives until the next `reset`, which is what you want while you are
+still changing it.
+
+**To make it permanent**, put it in the base:
+
+```bash
+./manage-agent-vm.sh refresh
+./manage-agent-vm.sh seal
+./manage-agent-vm.sh stop
+./manage-agent-vm.sh freeze
+```
+
+**Confirm.**
+
+```bash
+./manage-agent-vm.sh reset
+./manage-agent-vm.sh start
+./manage-agent-vm.sh ssh -- omarchy-ui --help | head -3
+```
+
+Running `reset` first is the point: it proves the change is in the base rather
+than in a copy that a reset would throw away.
 
 ---
 

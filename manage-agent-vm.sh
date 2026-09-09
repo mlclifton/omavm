@@ -354,6 +354,11 @@ cmd_seal() {
     trap 'rm -rf "$serve_dir"' RETURN
     pubkey=$(< "${SSH_KEY}.pub")
 
+    # The guest fetches the agent skill from the same server that serves this
+    # script, so there is one transfer mechanism rather than two.
+    tar -C "${REPO_DIR}/guest/skills" -czf "${serve_dir}/skills.tar.gz" . \
+        || die "Could not package guest/skills"
+
     sed -e "s|@GUEST_USER@|${GUEST_USER}|g" \
         -e "s|@VM_NAME@|${VM_NAME}|g" \
         -e "s|@SANDBOX_HOST_IP@|${SANDBOX_HOST_IP}|g" \
@@ -362,6 +367,7 @@ cmd_seal() {
         -e "s|@GATEWAY_PORT@|${GATEWAY_PORT}|g" \
         -e "s|@SHARE_TAG@|${SHARE_TAG}|g" \
         -e "s|@SHARE_MOUNT@|${SHARE_MOUNT}|g" \
+        -e "s|@SEAL_URL@|http://${HOST_IP}:${SEAL_HTTP_PORT}|g" \
         -e "s|@PUBKEY@|${pubkey}|g" \
         "$SEAL_SRC" > "${serve_dir}/s"
 

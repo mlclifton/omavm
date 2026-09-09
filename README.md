@@ -25,23 +25,42 @@ coupling does not exist at all.
 
 ## How an agent drives the desktop
 
-Everything runs inside the guest, over SSH from the host. Sealing installs all
-of it.
+Sealing installs `omarchy-ui`, a single command that wraps the tools that
+actually work on Hyprland, and an agent skill that teaches an agent to use it.
+The skill lands in `~/.claude/skills/omarchy-ui/` for the guest user, so an
+agent running in the guest picks it up without being told about it.
 
-| Task | Command in the guest |
+| Task | Command |
 |---|---|
-| Capture the screen | `grim -` |
-| Window and monitor geometry | `hyprctl -j clients`, `hyprctl -j monitors` |
-| Move the pointer | `ydotool mousemove -a X Y` |
-| Click | `ydotool click 0xC0` |
-| Type | `wtype 'text'` |
+| Check the environment | `omarchy-ui doctor` |
+| Window geometry | `omarchy-ui windows`, `omarchy-ui focused` |
+| Bar, menus and pickers | `omarchy-ui layers` |
+| Screenshot | `omarchy-ui shot`, `omarchy-ui shot --window Spotify` |
+| Click a window | `omarchy-ui click-window foot` |
+| Pointer and keys | `omarchy-ui at X Y`, `omarchy-ui key ctrl+c` |
+| Open an Omarchy menu | `omarchy-ui menu system` |
+| Wait for something | `omarchy-ui wait-window foot 5` |
 
-`ydotool` injects through `/dev/uinput`, so its events originate inside the
-guest rather than arriving from a viewer. That is what makes it independent of
+Two design points are worth knowing, because they are what makes this reliable.
+
+**It asks the compositor rather than reading pixels.** Hyprland knows exactly
+where every window and panel is. `omarchy-ui windows` is faster than a
+screenshot and cannot misread anti-aliased text. Screenshots are for judging
+what something looks like, not for working out where to click.
+
+**Input originates inside the guest.** `ydotool` injects through
+`/dev/uinput`, so its events do not come from a viewer and are unaffected by
 whatever your host pointer is doing.
 
-Prefer `hyprctl -j` over reading pixels when you can. Asking the compositor
-where a window is, is faster and far more reliable than looking for it.
+The Omarchy bar and menu are layer surfaces, not windows, so they never show up
+in `windows`. `omarchy-ui menu <route>` summons a menu by name rather than
+chording keys, and waits for it to appear.
+
+An agent on the host can use the same tool over SSH:
+
+```bash
+./manage-agent-vm.sh ssh -- omarchy-ui shot -  > frame.png
+```
 
 To watch without interfering:
 
@@ -89,6 +108,7 @@ describes the workstation profile.
 | `libvirt/omarchy-agent.xml.in` | The domain template. |
 | `proxy/` | Allowlisting proxy and credential gateway. Sandbox profile only. |
 | `guest/seal-guest.sh` | Runs once inside the guest to prepare it. |
+| `guest/skills/omarchy-ui/` | The agent skill and the `omarchy-ui` command. |
 | `OPERATIONS.md` | **Read this.** Every recurring manual task, with its trigger. |
 
 ---

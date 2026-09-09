@@ -27,6 +27,7 @@ PROXY_PORT="@PROXY_PORT@"
 GATEWAY_PORT="@GATEWAY_PORT@"
 SHARE_TAG="@SHARE_TAG@"
 SHARE_MOUNT="@SHARE_MOUNT@"
+SEAL_URL="@SEAL_URL@"
 PUBKEY="@PUBKEY@"
 
 if [[ $EUID -ne 0 ]]; then
@@ -112,6 +113,26 @@ RestartSec=2
 WantedBy=default.target
 YDOTOOL
 systemctl --global enable ydotoold.service
+
+# --------------------------------------------------------------------------
+step "Installing the omarchy-ui agent skill"
+# The skill teaches an agent to drive this desktop through the compositor's own
+# IPC rather than by guessing at pixels, and omarchy-ui is the command it uses.
+# Both come from the host over the same short-lived HTTP server that served
+# this script.
+if curl -fsSL "${SEAL_URL}/skills.tar.gz" | tar -xz -C /tmp 2>/dev/null; then
+    install -m 0755 /tmp/omarchy-ui/scripts/omarchy-ui /usr/local/bin/omarchy-ui
+    install -d -m 0755 -o "$GUEST_USER" -g "$GUEST_USER" \
+        "/home/${GUEST_USER}/.claude" "/home/${GUEST_USER}/.claude/skills" \
+        "/home/${GUEST_USER}/.claude/skills/omarchy-ui"
+    install -m 0644 -o "$GUEST_USER" -g "$GUEST_USER" \
+        /tmp/omarchy-ui/SKILL.md "/home/${GUEST_USER}/.claude/skills/omarchy-ui/SKILL.md"
+    rm -rf /tmp/omarchy-ui
+    echo "  omarchy-ui installed, skill available to agents run as ${GUEST_USER}"
+else
+    echo "  WARNING: could not fetch the skill bundle. The desktop still works," >&2
+    echo "  but agents will not have omarchy-ui. Re-run the seal step." >&2
+fi
 
 # --------------------------------------------------------------------------
 step "Configuring the host file share"
@@ -201,10 +222,12 @@ date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/omavm-sealed
 echo
 echo "Guest sealed. Shut it down now, then run: ./manage-agent-vm.sh freeze"
 echo
-echo "The agent drives this desktop from the host over SSH, with no viewer"
-echo "attached, so it never competes with your own cursor:"
-echo "  grim -                          capture the screen to stdout"
-echo "  hyprctl -j clients              window geometry as JSON"
-echo "  ydotool mousemove -a X Y        absolute pointer move"
-echo "  ydotool click 0xC0              left click"
-echo "  wtype 'text'                    type text"
+echo "An agent drives this desktop with omarchy-ui, which is on PATH:"
+echo "  omarchy-ui doctor               check the environment"
+echo "  omarchy-ui windows              window geometry from the compositor"
+echo "  omarchy-ui shot                 screenshot, prints the path"
+echo "  omarchy-ui click-window <match> click a window by class or title"
+echo "  omarchy-ui menu system          open an Omarchy menu route"
+echo
+echo "The omarchy-ui skill is installed for ${GUEST_USER}, so an agent running"
+echo "as that user picks it up without being told about it."

@@ -1,0 +1,380 @@
+#!/usr/bin/env bash
+#
+# omarchy-ui — drive the Omarchy desktop from a shell.
+#
+# Wraps the tools that actually work on Hyprland/Wayland, and hides the parts
+# that are easy to get wrong: the ydotool socket path, modifier syntax, waiting
+# for windows to appear, and converting a window match into coordinates.
+#
+# Run `omarchy-ui doctor` first if anything is behaving oddly.
+
+set -euo pipefail
+
+# ydotool finds its daemon through this. A command run over SSH without a login
+# shell does not get it from /etc/profile.d, so resolve it here rather than
+# failing with a confusing socket error.
+export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ydotoold.socket}"
+
+SETTLE="${OMARCHY_UI_SETTLE:-0.15}"
+
+die() { echo "omarchy-ui: $*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null || die "$1 is not installed"; }
+
+settle() { sleep "$SETTLE"; }
+
+# --------------------------------------------------------------------------
+# inspection
+# --------------------------------------------------------------------------
+
+# Ask the compositor where things are. Always prefer this to looking at pixels:
+# it is faster, it cannot misread anti-aliased text, and it gives you exact
+# geometry instead of an estimate.
+cmd_windows() {
+    need hyprctl
+    hyprctl -j clients | jq -r '
+        sort_by(.workspace.id) | .[] |
+        "\(.address)  ws=\(.workspace.id)  \(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])  " +
+        "class=\(.class)  title=\(.title)"'
+}
+
+cmd_focused() {
+    need hyprctl
+    hyprctl -j activewindow | jq -r '
+        if .address == null then "none"
+        else "\(.address)  \(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])  class=\(.class)  title=\(.title)"
+        end'
+}
+
+# Layer surfaces are where the Omarchy shell lives: the bar, the menu, the
+# emoji picker and so on. They are not windows and do not appear in `windows`.
+cmd_layers() {
+    need hyprctl
+    hyprctl -j layers | jq -r '
+        to_entries[] | .key as $mon | .value.levels | to_entries[] |
+        .key as $level | .value[] |
+        "\($mon)  level=\($level)  \(.x),\(.y) \(.w)x\(.h)  \(.namespace)"'
+}
+
+cmd_monitors() {
+    need hyprctl
+    hyprctl -j monitors | jq -r '.[] |
+        "\(.name)  \(.width)x\(.height)@\(.refreshRate|floor)  at \(.x),\(.y)  scale=\(.scale)  focused=\(.focused)"'
+}
+
+cmd_cursor() {
+    need hyprctl
+    hyprctl cursorpos
+}
+
+cmd_bar() {
+    need hyprctl
+    hyprctl -j layers | jq -r '
+        to_entries[] | .value.levels | to_entries[] | .value[] |
+        select(.namespace == "omarchy-bar") |
+        "\(.x),\(.y) \(.w)x\(.h)"'
+}
+
+# --------------------------------------------------------------------------
+# matching
+# --------------------------------------------------------------------------
+
+# Case-insensitive substring match against class, initialClass and title.
+# Prints one JSON object, or fails if the match is ambiguous, because acting on
+# the wrong window silently is worse than stopping.
+find_window() {
+    local match="$1" result count
+    result=$(hyprctl -j clients | jq --arg m "${match,,}" '
+        [ .[] | select(
+            (.class // "" | ascii_downcase | contains($m)) or
+            (.initialClass // "" | ascii_downcase | contains($m)) or
+            (.title // "" | ascii_downcase | contains($m))
+        ) ]')
+    count=$(jq 'length' <<<"$result")
+    case "$count" in
+        0) die "no window matches '$match'. See: omarchy-ui windows" ;;
+        1) jq '.[0]' <<<"$result" ;;
+        *) echo "omarchy-ui: '$match' matches $count windows:" >&2
+           jq -r '.[] | "  class=\(.class) title=\(.title)"' <<<"$result" >&2
+           die "narrow the match" ;;
+    esac
+}
+
+window_centre() {
+    jq -r '"\(.at[0] + (.size[0] / 2 | floor)) \(.at[1] + (.size[1] / 2 | floor))"'
+}
+
+# --------------------------------------------------------------------------
+# pointer
+# --------------------------------------------------------------------------
+
+# ydotool injects through /dev/uinput, so these events originate inside this
+# machine. That is what keeps them independent of anything happening on the
+# host, and why a viewer window is not required.
+button_code() {
+    case "${1:-left}" in
+        left)   echo 0xC0 ;;
+        right)  echo 0xC1 ;;
+        middle) echo 0xC2 ;;
+        *) die "unknown button '$1'. Use left, right or middle." ;;
+    esac
+}
+
+cmd_move() {
+    need ydotool
+    [[ $# -eq 2 ]] || die "usage: omarchy-ui move X Y"
+    ydotool mousemove -a -x "$1" -y "$2"
+    settle
+}
+
+cmd_click() {
+    need ydotool
+    ydotool click "$(button_code "${1:-left}")"
+    settle
+}
+
+cmd_at() {
+    [[ $# -ge 2 ]] || die "usage: omarchy-ui at X Y [button]"
+    cmd_move "$1" "$2"
+    cmd_click "${3:-left}"
+}
+
+cmd_click_window() {
+    [[ $# -ge 1 ]] || die "usage: omarchy-ui click-window <match> [button]"
+    local coords
+    coords=$(find_window "$1" | window_centre)
+    # shellcheck disable=SC2086
+    cmd_at $coords "${2:-left}"
+}
+
+cmd_scroll() {
+    need ydotool
+    [[ $# -eq 1 ]] || die "usage: omarchy-ui scroll <amount>   (negative scrolls up)"
+    ydotool mousemove -w -y "$1"
+    settle
+}
+
+# --------------------------------------------------------------------------
+# keyboard
+# --------------------------------------------------------------------------
+
+# wtype uses the Wayland virtual-keyboard protocol, so unlike ydotool it needs
+# no uinput access and no daemon. Text and key names both go through it.
+cmd_type() {
+    need wtype
+    [[ $# -ge 1 ]] || die "usage: omarchy-ui type <text>"
+    wtype -- "$*"
+    settle
+}
+
+# Accepts combos like: Return, Escape, ctrl+c, super+space, ctrl+shift+t
+# Modifier names are translated to what wtype expects; super becomes logo.
+cmd_key() {
+    need wtype
+    [[ $# -ge 1 ]] || die "usage: omarchy-ui key <combo>"
+    local combo="$1" part key
+    local -a mods=() args=()
+    IFS='+' read -ra part <<<"$combo"
+    key="${part[-1]}"
+    unset 'part[-1]'
+    for m in "${part[@]:-}"; do
+        [[ -z "$m" ]] && continue
+        case "${m,,}" in
+            ctrl|control) mods+=(ctrl) ;;
+            shift)        mods+=(shift) ;;
+            alt)          mods+=(alt) ;;
+            super|meta|win|logo) mods+=(logo) ;;
+            altgr)        mods+=(altgr) ;;
+            *) die "unknown modifier '$m'" ;;
+        esac
+    done
+    for m in "${mods[@]:-}"; do [[ -n "$m" ]] && args+=(-M "$m"); done
+    args+=(-k "$key")
+    for m in "${mods[@]:-}"; do [[ -n "$m" ]] && args+=(-m "$m"); done
+    wtype "${args[@]}"
+    settle
+}
+
+# --------------------------------------------------------------------------
+# screenshots
+# --------------------------------------------------------------------------
+
+# grim captures the compositor's own output, so it sees everything a person
+# would: the bar, menus, popups and layer surfaces included.
+cmd_shot() {
+    need grim
+    local out="" region="" match=""
+    while (( $# )); do
+        case "$1" in
+            --region) region="$2"; shift 2 ;;
+            --window) match="$2"; shift 2 ;;
+            *) out="$1"; shift ;;
+        esac
+    done
+    if [[ -n "$match" ]]; then
+        region=$(find_window "$match" | jq -r '"\(.at[0]),\(.at[1]) \(.size[0])x\(.size[1])"')
+    fi
+    local -a args=()
+    [[ -n "$region" ]] && args+=(-g "$region")
+    if [[ -z "$out" ]]; then
+        out="${TMPDIR:-/tmp}/omarchy-ui-$(date +%Y%m%d-%H%M%S).png"
+    fi
+    if [[ "$out" == "-" ]]; then
+        grim "${args[@]}" -
+    else
+        grim "${args[@]}" "$out"
+        echo "$out"
+    fi
+}
+
+# --------------------------------------------------------------------------
+# omarchy shell
+# --------------------------------------------------------------------------
+
+# summon rather than toggle. Toggle depends on current state, so calling it
+# twice leaves the menu closed and an agent cannot tell which happened.
+cmd_menu() {
+    need omarchy-menu
+    omarchy-menu summon "${1:-root}"
+    cmd_wait_layer omarchy-menu 3 || die "the menu did not appear. Is omarchy-shell running?"
+}
+
+cmd_menu_close() {
+    need omarchy-menu
+    omarchy-menu close || true
+    settle
+}
+
+# --------------------------------------------------------------------------
+# waiting
+# --------------------------------------------------------------------------
+
+# Acting immediately after opening something is the most common cause of a
+# click landing on nothing. Wait for the thing to exist first.
+cmd_wait_window() {
+    [[ $# -ge 1 ]] || die "usage: omarchy-ui wait-window <match> [timeout]"
+    # Integer ticks of a quarter second. Doing this with bc would add a
+    # dependency that is not installed by default, for arithmetic this simple.
+    local match="$1" ticks=$(( ${2:-10} * 4 )) i=0
+    while (( i < ticks )); do
+        if hyprctl -j clients | jq -e --arg m "${match,,}" '
+            any(.[]; (.class // "" | ascii_downcase | contains($m)) or
+                     (.title // "" | ascii_downcase | contains($m)))' >/dev/null; then
+            return 0
+        fi
+        sleep 0.25
+        i=$(( i + 1 ))
+    done
+    return 1
+}
+
+cmd_wait_layer() {
+    [[ $# -ge 1 ]] || die "usage: omarchy-ui wait-layer <namespace> [timeout]"
+    local ns="$1" ticks=$(( ${2:-10} * 4 )) i=0
+    while (( i < ticks )); do
+        if hyprctl -j layers | jq -e --arg n "$ns" '
+            any(.[].levels | to_entries[].value[]; .namespace == $n)' >/dev/null; then
+            return 0
+        fi
+        sleep 0.25
+        i=$(( i + 1 ))
+    done
+    return 1
+}
+
+# --------------------------------------------------------------------------
+# diagnosis
+# --------------------------------------------------------------------------
+
+cmd_doctor() {
+    local failures=0
+    check() {
+        printf '  %-28s ' "$1"
+        if eval "$2" >/dev/null 2>&1; then echo "ok"; else echo "FAILED"; failures=$((failures+1)); fi
+    }
+    echo "omarchy-ui environment:"
+    check "hyprctl responds"      "hyprctl version"
+    check "a monitor is present"  "[ \"\$(hyprctl -j monitors | jq length)\" -gt 0 ]"
+    check "grim captures"         "grim - > /dev/null"
+    check "wtype present"         "command -v wtype"
+    check "ydotool present"       "command -v ydotool"
+    check "ydotoold socket"       "[ -S \"\$YDOTOOL_SOCKET\" ]"
+    check "omarchy shell responds" "omarchy-shell -q shell ping"
+    echo
+    echo "  YDOTOOL_SOCKET=$YDOTOOL_SOCKET"
+    echo "  WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
+    if (( failures )); then
+        echo
+        echo "  $failures check(s) failed. If the socket is missing, start the daemon:"
+        echo "      systemctl --user start ydotoold"
+        echo "  If hyprctl or grim fail, there is no graphical session for this user."
+        return 1
+    fi
+}
+
+usage() {
+    cat <<'USAGE'
+omarchy-ui — drive the Omarchy desktop
+
+Inspect (prefer these to reading pixels):
+  windows                     all windows with geometry, class and title
+  focused                     the focused window
+  layers                      layer surfaces: bar, menus, pickers
+  monitors                    outputs, resolution, scale
+  bar                         geometry of the Omarchy bar
+  cursor                      current pointer position
+
+Screenshot:
+  shot [FILE]                 whole screen; prints the path, or use - for stdout
+  shot --window <match> [F]   just that window
+  shot --region X,Y WxH [F]   an explicit region
+
+Pointer:
+  move X Y                    absolute move
+  click [left|right|middle]
+  at X Y [button]             move then click
+  click-window <match> [btn]  click the centre of a matched window
+  scroll <amount>             negative scrolls up
+
+Keyboard:
+  type <text>
+  key <combo>                 Return, Escape, ctrl+c, super+space
+
+Omarchy shell:
+  menu [route]                summon the menu: root apps capture hardware
+                              system theme background share toggle
+  menu-close
+
+Wait (do this before clicking on something you just opened):
+  wait-window <match> [secs]
+  wait-layer <namespace> [secs]
+
+  doctor                      check the environment and say what is broken
+
+Coordinates are Hyprland logical pixels, global across all outputs.
+Set OMARCHY_UI_SETTLE to change the pause after each action (default 0.15s).
+USAGE
+}
+
+case "${1:-}" in
+    windows)      shift; cmd_windows "$@" ;;
+    focused)      shift; cmd_focused "$@" ;;
+    layers)       shift; cmd_layers "$@" ;;
+    monitors)     shift; cmd_monitors "$@" ;;
+    bar)          shift; cmd_bar "$@" ;;
+    cursor)       shift; cmd_cursor "$@" ;;
+    shot)         shift; cmd_shot "$@" ;;
+    move)         shift; cmd_move "$@" ;;
+    click)        shift; cmd_click "$@" ;;
+    at)           shift; cmd_at "$@" ;;
+    click-window) shift; cmd_click_window "$@" ;;
+    scroll)       shift; cmd_scroll "$@" ;;
+    type)         shift; cmd_type "$@" ;;
+    key)          shift; cmd_key "$@" ;;
+    menu)         shift; cmd_menu "$@" ;;
+    menu-close)   shift; cmd_menu_close "$@" ;;
+    wait-window)  shift; cmd_wait_window "$@" ;;
+    wait-layer)   shift; cmd_wait_layer "$@" ;;
+    doctor)       shift; cmd_doctor "$@" ;;
+    ""|-h|--help|help) usage ;;
+    *) usage; exit 2 ;;
+esac
