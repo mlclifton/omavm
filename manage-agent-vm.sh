@@ -15,8 +15,10 @@
 #   watch     Stream screenshots from the guest without touching its cursor.
 #   screenshot  Save one frame from the guest to a file.
 #   ssh       Run a command in the guest, or open a shell.
-#   paste     Type the host clipboard into the guest. Works before sealing,
-#             when SPICE clipboard sharing cannot work yet.
+#   paste     Type the host clipboard into the guest, key by key. For use
+#             before the guest is sealed, when nothing else works.
+#   clip      Move the clipboard between host and guest over SSH.
+#             `clip pull` guest to host, `clip push` host to guest.
 #   refresh   Boot a writable copy of the base so you can update it.
 #   status    Show the profile, the domain, the share and image sizes.
 #   logs      Follow the proxy audit log (sandbox profile only).
@@ -816,6 +818,41 @@ cmd_paste() {
     return 0
 }
 
+# Clipboard transfer over SSH.
+#
+# SPICE clipboard sharing does not work with a Hyprland guest. The packaged
+# spice-vdagent is an X11 agent: its own help says "guest agent: X11", it links
+# libx11 and takes an X --display, and it syncs the XWayland clipboard rather
+# than the Wayland one. Neither direction propagates in practice.
+#
+# This route does not involve SPICE at all, so it works headless with no viewer
+# attached, which is the normal state for an agent-driven guest anyway.
+cmd_clip() {
+    domain_running || die "The guest is not running."
+    local direction="${1:-pull}"
+    case "$direction" in
+        pull)
+            command -v wl-copy &>/dev/null || die "wl-copy is not installed on the host."
+            local content
+            content=$(guest_exec "${OMAVM_UI:-omarchy-ui} clip-get") \
+                || die "Could not read the guest clipboard. Try: $0 ssh -- omarchy-ui doctor"
+            printf '%s' "$content" | wl-copy
+            ok "Guest clipboard copied to the host ($(printf '%s' "$content" | wc -c) bytes)"
+            ;;
+        push)
+            command -v wl-paste &>/dev/null || die "wl-paste is not installed on the host."
+            wl-paste --no-newline | guest_exec "${OMAVM_UI:-omarchy-ui} clip-set" \
+                || die "Could not set the guest clipboard."
+            ok "Host clipboard copied to the guest"
+            ;;
+        *)
+            die "usage: $0 clip [pull|push]
+    pull   guest clipboard -> host   (the default)
+    push   host clipboard -> guest"
+            ;;
+    esac
+}
+
 cmd_status() {
     stage "Status"
     printf '  %-22s %s\n' "profile" "$PROFILE"
@@ -893,7 +930,7 @@ main() {
     local cmd="${1:-status}"
     shift || true
     case "$cmd" in
-        init|build|rebuild|seal|freeze|reset|start|stop|reboot|gui|ssh|watch|screenshot|paste|refresh|status|logs)
+        init|build|rebuild|seal|freeze|reset|start|stop|reboot|gui|ssh|watch|screenshot|paste|clip|refresh|status|logs)
             require_libvirt_access
             "cmd_${cmd}" "$@"
             ;;

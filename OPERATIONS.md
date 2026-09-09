@@ -26,7 +26,7 @@ below simply does not arise.
 | Pasting into the guest does nothing | [Type it from the host instead](#you-cannot-paste-into-the-guest) | During an install |
 | Typed punctuation comes out wrong | [Set the keyboard layout](#typed-punctuation-is-wrong) | Once per guest |
 | Seal stops partway with errors | [Get in over SSH and finish it](#seal-stopped-partway) | Rare |
-| Clipboard still does not work after sealing | [Start the session agent](#clipboard-does-not-work-after-sealing) | Once per guest |
+| Clipboard does not move between host and guest | [Use the SSH route](#clipboard-does-not-work-between-host-and-guest) | Whenever you need it |
 | Seal reports the wrong guest account | [Set GUEST_USER](#the-guest-account-name-does-not-match) | After an install |
 | Seal keeps failing the same way after a fix | [Check for a stale seal server](#seal-keeps-running-an-old-script) | After an interrupted seal |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
@@ -538,56 +538,61 @@ real clipboard sharing takes over and the layout stops mattering.
 
 ---
 
-## Clipboard does not work after sealing
+## Clipboard does not work between host and guest
 
-**Trigger.** The guest is sealed, `spice-vdagentd` is running, and copy and
-paste between host and guest still does nothing in either direction.
+**Trigger.** Copying in the guest and pasting on the host does nothing, or the
+reverse.
 
-**Why it happens.** Clipboard sharing needs **two** processes in the guest, and
-enabling the obvious one is not enough.
-
-| Process | Kind | What it does |
-|---|---|---|
-| `spice-vdagentd` | system service | talks to the host over the virtio channel |
-| `spice-vdagent` | per-session client | talks to the compositor holding the clipboard |
-
-The per-session client ships as an XDG autostart entry, which Hyprland does not
-read directly. Without it the daemon has nothing to exchange clipboard data
-with, and fails silently rather than complaining.
-
-**Check both:**
+**Use the SSH route. It works.**
 
 ```bash
-./manage-agent-vm.sh ssh -- systemctl is-active spice-vdagentd
-./manage-agent-vm.sh ssh -- pgrep -a spice-vdagent
+./manage-agent-vm.sh clip pull      # guest clipboard -> host
+./manage-agent-vm.sh clip push      # host clipboard -> guest
 ```
 
-The second must show a process **without** the trailing `d`. If only
-`spice-vdagentd` appears, that is the fault.
+This does not involve SPICE at all, so it works with no viewer attached, which
+is the normal state for an agent-driven guest.
 
-**Steps.** Sealing installs a user unit for the session client. It starts at the
-next login, not immediately, so the guest needs a reboot:
+**Why SPICE clipboard sharing does not work here.** The packaged
+`spice-vdagent` is an X11 agent. Its own help says `guest session guest agent:
+X11`, it depends on `libx11` and takes an X `--display`, and it syncs the
+XWayland clipboard rather than the Wayland one. On a Hyprland guest the two are
+not bridged in a way that propagates, so neither direction works even when
+every part looks healthy:
+
+| Check | Result on a working-looking guest |
+|---|---|
+| `spice-vdagentd` | active |
+| `spice-vdagent` session client | running, `DISPLAY=:0` |
+| XWayland | running |
+| virt-viewer attached | yes |
+| Clipboard actually syncing | **no** |
+
+So do not spend time on the agent. Every component being healthy is consistent
+with the clipboard not working, because the missing piece is Wayland support in
+`spice-vdagent` itself.
+
+**If you are trying keyboard shortcuts inside the guest**, Omarchy binds
+`SUPER + C` for universal copy and `SUPER + V` for universal paste, not
+`SUPER + SHIFT + C`. Check what is bound:
 
 ```bash
-./manage-agent-vm.sh ssh -- sudo reboot
+./manage-agent-vm.sh ssh -- 'grep -rn "Universal" /usr/share/omarchy/default/hypr/bindings/clipboard.lua'
 ```
 
-If it still does not appear after that:
+Those move text within the guest. Getting it to the host is the `clip` command
+above.
+
+**Confirm the round trip:**
 
 ```bash
-./manage-agent-vm.sh ssh -- systemctl --user status spice-vdagent
+./manage-agent-vm.sh ssh -- 'printf hello | omarchy-ui clip-set'
+./manage-agent-vm.sh clip pull
+wl-paste
 ```
 
-**Also check the hypervisor is willing**, which it will not be in the sandbox
-profile:
-
-```bash
-virsh --connect qemu:///system dumpxml omarchy-agent | grep clipboard
-```
-
-**Note.** The same reasoning applies to `ydotoold`, which is also a session
-service. Both need one login after sealing before they exist, which is why the
-seal step now tells you to reboot before freezing.
+**Note.** `clip` transfers text. It uses `wl-paste --no-newline`, so a trailing
+newline is not preserved, and it is not a route for images or binary data.
 
 ---
 

@@ -62,6 +62,25 @@ An agent on the host can use the same tool over SSH:
 ./manage-agent-vm.sh ssh -- omarchy-ui shot -  > frame.png
 ```
 
+`omarchy-ui` discovers the graphical session's environment itself, so it works
+over SSH without a login shell or any exported variables.
+
+## Clipboard
+
+```bash
+./manage-agent-vm.sh clip pull      # guest clipboard -> host
+./manage-agent-vm.sh clip push      # host clipboard -> guest
+```
+
+This goes over SSH and needs no viewer attached.
+
+**SPICE clipboard sharing does not work with a Hyprland guest**, so do not wait
+for it. The packaged `spice-vdagent` is an X11 agent that syncs the XWayland
+clipboard, and on a Wayland session the two do not bridge in a way that
+propagates. Every component can look healthy while nothing syncs. The domain
+still enables clipboard sharing, so it will start working if a Wayland-capable
+agent ships later.
+
 To watch without interfering:
 
 ```bash

@@ -10,10 +10,35 @@
 
 set -euo pipefail
 
-# ydotool finds its daemon through this. A command run over SSH without a login
-# shell does not get it from /etc/profile.d, so resolve it here rather than
-# failing with a confusing socket error.
-export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ydotoold.socket}"
+# A command arriving over SSH gets none of the graphical session's environment,
+# so every one of these would be unset and hyprctl, grim and wl-paste would all
+# fail with unrelated-looking errors. Discover them instead of asking the caller
+# to export them.
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+
+if [[ -z "${WAYLAND_DISPLAY:-}" ]]; then
+    for _sock in "$XDG_RUNTIME_DIR"/wayland-[0-9]*; do
+        # The glob also matches the .lock files, so test for a socket.
+        [[ -S "$_sock" ]] || continue
+        export WAYLAND_DISPLAY="${_sock##*/}"
+        break
+    done
+fi
+
+if [[ -z "${HYPRLAND_INSTANCE_SIGNATURE:-}" && -d "$XDG_RUNTIME_DIR/hypr" ]]; then
+    # Newest first, so a stale directory from a previous session loses.
+    for _sig in $(ls -1t "$XDG_RUNTIME_DIR/hypr" 2>/dev/null); do
+        [[ -S "$XDG_RUNTIME_DIR/hypr/$_sig/.socket.sock" ]] || continue
+        export HYPRLAND_INSTANCE_SIGNATURE="$_sig"
+        break
+    done
+fi
+
+# XWayland, used by anything that has not been ported.
+export DISPLAY="${DISPLAY:-:0}"
+
+# ydotool finds its daemon through this.
+export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-${XDG_RUNTIME_DIR}/ydotoold.socket}"
 
 SETTLE="${OMARCHY_UI_SETTLE:-0.15}"
 
@@ -227,6 +252,26 @@ cmd_shot() {
 }
 
 # --------------------------------------------------------------------------
+# clipboard
+# --------------------------------------------------------------------------
+
+cmd_clip_get() {
+    need wl-paste
+    wl-paste --no-newline
+}
+
+cmd_clip_set() {
+    need wl-copy
+    # wl-copy forks a process that holds the selection for as long as it is
+    # offered. Over SSH that keeps the channel open and the caller hangs, so
+    # its stdio has to be detached from the connection.
+    local content
+    content=$(cat)
+    nohup wl-copy -- "$content" >/dev/null 2>&1 &
+    sleep 0.2
+}
+
+# --------------------------------------------------------------------------
 # omarchy shell
 # --------------------------------------------------------------------------
 
@@ -299,9 +344,11 @@ cmd_doctor() {
     check "ydotool present"       "command -v ydotool"
     check "ydotoold socket"       "[ -S \"\$YDOTOOL_SOCKET\" ]"
     check "omarchy shell responds" "omarchy-shell -q shell ping"
+    check "clipboard readable"    "wl-paste --list-types"
     echo
-    echo "  YDOTOOL_SOCKET=$YDOTOOL_SOCKET"
     echo "  WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
+    echo "  HYPRLAND_INSTANCE_SIGNATURE=${HYPRLAND_INSTANCE_SIGNATURE:-unset}"
+    echo "  YDOTOOL_SOCKET=$YDOTOOL_SOCKET"
     if (( failures )); then
         echo
         echo "  $failures check(s) failed. If the socket is missing, start the daemon:"
@@ -334,6 +381,10 @@ Pointer:
   at X Y [button]             move then click
   click-window <match> [btn]  click the centre of a matched window
   scroll <amount>             negative scrolls up
+
+Clipboard:
+  clip-get                    print the guest clipboard
+  clip-set                    set the guest clipboard from stdin
 
 Keyboard:
   type <text>
@@ -370,6 +421,8 @@ case "${1:-}" in
     scroll)       shift; cmd_scroll "$@" ;;
     type)         shift; cmd_type "$@" ;;
     key)          shift; cmd_key "$@" ;;
+    clip-get)     shift; cmd_clip_get "$@" ;;
+    clip-set)     shift; cmd_clip_set "$@" ;;
     menu)         shift; cmd_menu "$@" ;;
     menu-close)   shift; cmd_menu_close "$@" ;;
     wait-window)  shift; cmd_wait_window "$@" ;;
