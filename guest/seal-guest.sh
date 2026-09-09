@@ -74,7 +74,9 @@ HOME_DIR=$(getent passwd "$GUEST_USER" | cut -d: -f6)
 # Report the account back over the same server that served this script, so the
 # host knows which user to connect as. The request 404s; the point is the entry
 # it leaves in the server's access log.
-curl -s -o /dev/null "${SEAL_URL}/whoami/${GUEST_USER}" 2>/dev/null || true
+if [[ -n "$SEAL_URL" ]]; then
+    curl -s -o /dev/null "${SEAL_URL}/whoami/${GUEST_USER}" 2>/dev/null || true
+fi
 
 # --------------------------------------------------------------------------
 step "Installing remote access"
@@ -197,7 +199,17 @@ fi
 
 # --------------------------------------------------------------------------
 step "Installing the omarchy-ui agent skill"
-if curl -fsSL "${SEAL_URL}/skills.tar.gz" | tar -xz -C /tmp 2>/dev/null; then
+# Delivered either as a file already copied in over SSH, or fetched from the
+# temporary HTTP server, depending on how this script was run.
+skills_ok=1
+if [[ -f /tmp/omavm-skills.tar.gz ]]; then
+    tar -xzf /tmp/omavm-skills.tar.gz -C /tmp 2>/dev/null || skills_ok=0
+elif [[ -n "$SEAL_URL" ]]; then
+    curl -fsSL "${SEAL_URL}/skills.tar.gz" | tar -xz -C /tmp 2>/dev/null || skills_ok=0
+else
+    skills_ok=0
+fi
+if (( skills_ok )); then
     install -m 0755 /tmp/omarchy-ui/scripts/omarchy-ui /usr/local/bin/omarchy-ui \
         && install -d -m 0755 -o "$GUEST_USER" -g "$GUEST_USER" \
             "${HOME_DIR}/.claude" "${HOME_DIR}/.claude/skills" "${HOME_DIR}/.claude/skills/omarchy-ui" \
@@ -205,9 +217,9 @@ if curl -fsSL "${SEAL_URL}/skills.tar.gz" | tar -xz -C /tmp 2>/dev/null; then
             /tmp/omarchy-ui/SKILL.md "${HOME_DIR}/.claude/skills/omarchy-ui/SKILL.md" \
         && note "omarchy-ui installed; the skill is available to agents run as ${GUEST_USER}" \
         || warn "could not install the omarchy-ui skill"
-    rm -rf /tmp/omarchy-ui
+    rm -rf /tmp/omarchy-ui /tmp/omavm-skills.tar.gz
 else
-    warn "could not fetch the skill bundle from the host"
+    warn "could not unpack the skill bundle"
 fi
 
 # --------------------------------------------------------------------------

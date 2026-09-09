@@ -385,24 +385,11 @@ stop_stale_seal_server() {
     sleep 0.5
 }
 
-cmd_seal() {
-    domain_running || die "The guest is not running. Run '$0 build' and finish the install first."
-    [[ "$PROFILE" != "sandbox" ]] \
-        || die "Sealing needs internet to install the guest tooling.
-    Run it with the workstation profile: OMAVM_PROFILE=workstation $0 seal"
-    [[ -f "${SSH_KEY}.pub" ]] || die "Missing ${SSH_KEY}.pub. Run install_host_deps.sh first."
-
-    stage "Serving the seal script to the guest"
-    local serve_dir rendered pubkey
-    serve_dir=$(mktemp -d)
-    trap 'rm -rf "$serve_dir"' RETURN
+# Render the seal script with everything substituted. $1 is the SEAL_URL, left
+# empty when the script is delivered over SSH rather than served over HTTP.
+render_seal() {
+    local url="$1" out="$2" pubkey
     pubkey=$(< "${SSH_KEY}.pub")
-
-    # The guest fetches the agent skill from the same server that serves this
-    # script, so there is one transfer mechanism rather than two.
-    tar -C "${REPO_DIR}/guest/skills" -czf "${serve_dir}/skills.tar.gz" . \
-        || die "Could not package guest/skills"
-
     sed -e "s|@GUEST_USER@|${GUEST_USER}|g" \
         -e "s|@VM_NAME@|${VM_NAME}|g" \
         -e "s|@SANDBOX_HOST_IP@|${SANDBOX_HOST_IP}|g" \
@@ -413,9 +400,67 @@ cmd_seal() {
         -e "s|@SHARE_MOUNT@|${SHARE_MOUNT}|g" \
         -e "s|@WORKSTATION_SUBNET@|${WORKSTATION_SUBNET}|g" \
         -e "s|@SANDBOX_SUBNET@|${SANDBOX_SUBNET}|g" \
-        -e "s|@SEAL_URL@|http://${HOST_IP}:${SEAL_HTTP_PORT}|g" \
+        -e "s|@SEAL_URL@|${url}|g" \
         -e "s|@PUBKEY@|${pubkey}|g" \
-        "$SEAL_SRC" > "${serve_dir}/s"
+        "$SEAL_SRC" > "$out"
+}
+
+# Once the guest has SSH, sealing needs no HTTP server and nothing typed in the
+# guest. Re-sealing happens on every base refresh, so this is the common path.
+# The served-over-HTTP route below exists only for the first seal, when there is
+# no way in yet.
+seal_over_ssh() {
+    local work
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' RETURN
+
+    stage "Sealing over SSH"
+    ok "Guest already reachable at ${GUEST_IP}, no manual step needed"
+
+    tar -C "${REPO_DIR}/guest/skills" -czf "${work}/skills.tar.gz" . \
+        || die "Could not package guest/skills"
+    render_seal "" "${work}/seal.sh"
+
+    scp -q -i "$SSH_KEY" $SSH_OPTS "${work}/skills.tar.gz" "${work}/seal.sh" \
+        "${GUEST_USER}@${GUEST_IP}:/tmp/" \
+        || die "Could not copy the seal files into the guest"
+    guest_exec "mv /tmp/skills.tar.gz /tmp/omavm-skills.tar.gz"
+
+    # Copy the script in and run it from there rather than feeding it on
+    # stdin. With the script on stdin there is no terminal left for sudo to
+    # prompt on, and it refuses instead of asking for a password.
+    info "The guest will ask for the sudo password for ${GUEST_USER}."
+    ssh -t -i "$SSH_KEY" $SSH_OPTS "${GUEST_USER}@${GUEST_IP}" \
+        "sudo bash /tmp/seal.sh; rm -f /tmp/seal.sh"
+}
+
+cmd_seal() {
+    domain_running || die "The guest is not running. Run '$0 build' and finish the install first."
+    [[ "$PROFILE" != "sandbox" ]] \
+        || die "Sealing needs internet to install the guest tooling.
+    Run it with the workstation profile: OMAVM_PROFILE=workstation $0 seal"
+    [[ -f "${SSH_KEY}.pub" ]] || die "Missing ${SSH_KEY}.pub. Run install_host_deps.sh first."
+
+    if guest_exec true 2>/dev/null; then
+        seal_over_ssh
+        echo
+        info "Reboot the guest so the session services start, then freeze:"
+        info "  $0 ssh -- sudo reboot"
+        info "  $0 stop && $0 freeze"
+        return
+    fi
+
+    stage "Serving the seal script to the guest"
+    local serve_dir
+    serve_dir=$(mktemp -d)
+    trap 'rm -rf "$serve_dir"' RETURN
+
+    # The guest fetches the agent skill from the same server that serves this
+    # script, so there is one transfer mechanism rather than two.
+    tar -C "${REPO_DIR}/guest/skills" -czf "${serve_dir}/skills.tar.gz" . \
+        || die "Could not package guest/skills"
+
+    render_seal "http://${HOST_IP}:${SEAL_HTTP_PORT}" "${serve_dir}/s"
 
     # A server left behind by an interrupted seal keeps the port, so the new
     # one fails to bind and the guest silently fetches the previous script.
