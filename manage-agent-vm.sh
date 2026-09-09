@@ -62,6 +62,53 @@ wan_interface() {
     ip -4 route show default | awk '{print $5; exit}'
 }
 
+# QEMU does not run as you. libvirt starts it as an unprivileged system user,
+# which cannot traverse a 0700 home directory, so an ISO under ~/Downloads is
+# unreadable no matter what mode the file itself has. libvirt also applies
+# dynamic ownership to whatever it is pointed at, so naming a file in your home
+# directory leaves that file chowned away from you afterwards.
+#
+# Staging a copy into the image directory avoids both problems. The copy is
+# reflinked where the filesystem supports it, so on btrfs or xfs it is instant
+# and costs no extra space.
+STAGED_ISO=""
+stage_iso() {
+    local src="$1" staged
+    [[ -f "$src" ]] || die "ISO not found: $src"
+    staged="${IMAGE_DIR}/$(basename "$src")"
+
+    if [[ "$src" -ef "$staged" ]]; then
+        STAGED_ISO="$staged"
+        return 0
+    fi
+
+    local src_size staged_size
+    src_size=$(stat -c %s "$src")
+    staged_size=$(sudo stat -c %s "$staged" 2>/dev/null || echo 0)
+
+    if [[ "$src_size" == "$staged_size" ]]; then
+        ok "Installer media already staged at $staged"
+    else
+        info "Staging the ISO where qemu can read it. $(numfmt --to=iec "$src_size")."
+        sudo cp --reflink=auto "$src" "${staged}.part"
+        sudo mv "${staged}.part" "$staged"
+        sudo chown root:root "$staged"
+        sudo chmod 0644 "$staged"
+        ok "Staged at $staged"
+    fi
+
+    # An earlier failed attempt may have left the original chowned to the qemu
+    # user by libvirt's dynamic ownership. Give it back.
+    local owner
+    owner=$(stat -c %U "$src")
+    if [[ "$owner" != "$USER" ]]; then
+        warn "libvirt had taken ownership of $src (now $owner). Restoring it to $USER."
+        sudo chown "${USER}:$(id -gn)" "$src"
+    fi
+
+    STAGED_ISO="$staged"
+}
+
 # Render the domain template. Everything variable about the VM lives here.
 #   $1 disk image   $2 network name   $3 optional ISO path
 render_domain() {
@@ -192,11 +239,14 @@ cmd_build() {
     or set OMARCHY_ISO in config/omavm.conf."
     [[ -f "$WORK_IMAGE" ]] || die "No build disk. Run: $0 init"
 
+    stage "Preparing installer media"
+    stage_iso "$iso"
+
     stage "Booting the installer on the build network"
     domain_running && $VIRSH destroy "$VM_NAME" >/dev/null
     open_build_network
     sudo rm -f "$NVRAM_FILE"
-    define_domain "$WORK_IMAGE" "$BUILD_NET" "$iso"
+    define_domain "$WORK_IMAGE" "$BUILD_NET" "$STAGED_ISO"
     $VIRSH start "$VM_NAME" >/dev/null
     ok "Guest started with the installer attached"
     echo

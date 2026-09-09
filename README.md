@@ -87,6 +87,13 @@ This boots the installer on the **build network**, which has real NAT to the
 internet because the Omarchy installer needs it. A display window opens
 automatically.
 
+The ISO is first copied into `/var/lib/libvirt/images/omavm/`. QEMU does not run
+as you, and the unprivileged user libvirt starts it as cannot traverse a `0700`
+home directory, so an ISO left in `~/Downloads` is unreadable to it whatever
+mode the file itself has. Staging also keeps libvirt's dynamic ownership from
+chowning your copy away from you. On a filesystem with reflink support the copy
+is instant.
+
 Install Omarchy as you normally would, with two constraints:
 
 1. **Create the user account named `agent`.** If you prefer another name, change

@@ -17,6 +17,7 @@ to type. If a task is not in here and you find yourself doing it twice, add it.
 | The guest SSH fingerprint changed | [Investigate a fingerprint change](#the-guest-ssh-host-key-changed) | Should be never |
 | Guest boots to a black screen after a host update | [Fall back to software rendering](#the-guest-boots-to-a-black-screen) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
+| A file you passed to the VM gives "Permission denied" | [Stage it where qemu can read it](#permission-denied-on-a-file-you-passed-to-the-vm) | Whenever it happens |
 | `/var/lib` is filling up | [Reclaim overlay space](#disk-is-filling-up) | As needed |
 
 ---
@@ -424,6 +425,55 @@ was built before that fix and needs re-sealing.
 
 ---
 
+## Permission denied on a file you passed to the VM
+
+**Trigger.** Starting the domain fails with a monitor error like:
+
+```
+Could not open '/home/you/Downloads/something.iso': Permission denied
+```
+
+**Why it happens.** QEMU does not run as you. libvirt starts it as an
+unprivileged system user, and that user cannot traverse a `0700` home
+directory. The mode on the file itself is irrelevant, because the process
+cannot reach it in the first place. `namei -l` on the path shows which
+directory is blocking:
+
+```bash
+namei -l ~/Downloads/omarchy-4.0.3.iso
+```
+
+**Steps.** `manage-agent-vm.sh build` stages the ISO into
+`/var/lib/libvirt/images/omavm/` automatically, so re-running it is the fix.
+For any other file you want to attach, copy it there yourself:
+
+```bash
+sudo cp --reflink=auto /path/to/file /var/lib/libvirt/images/omavm/
+sudo chown root:root /var/lib/libvirt/images/omavm/file
+sudo chmod 0644 /var/lib/libvirt/images/omavm/file
+```
+
+**Do not** `chmod o+x` your home directory to work around this. That grants
+every local user traversal into it, permanently, to fix one file.
+
+**Check afterwards.** libvirt applies dynamic ownership to whatever it is
+pointed at, so a failed attempt may have left your original file chowned to the
+qemu user:
+
+```bash
+ls -l ~/Downloads/omarchy-4.0.3.iso
+```
+
+If the owner is not you, take it back:
+
+```bash
+sudo chown "$USER:$(id -gn)" ~/Downloads/omarchy-4.0.3.iso
+```
+
+The build command now does this for you, but older copies may still be affected.
+
+---
+
 ## Disk is filling up
 
 **Trigger.** `/var/lib` is short of space, or `./manage-agent-vm.sh status`
@@ -448,6 +498,14 @@ sudo du -h /var/lib/libvirt/images/omavm/*
 ```
 
 The base image is compressed at freeze time and does not grow between refreshes.
+
+Staged installer ISOs also live in that directory and are several gigabytes
+each. They are only needed during a build, so once you have a frozen base they
+can go:
+
+```bash
+sudo rm /var/lib/libvirt/images/omavm/*.iso
+```
 
 ---
 
