@@ -370,6 +370,21 @@ cmd_build() {
     cmd_gui
 }
 
+# Kill a seal server left over from an earlier, interrupted run. Matched on our
+# own exact command line rather than on the port, so nothing else is touched.
+stop_stale_seal_server() {
+    local pids
+    pids=$(pgrep -f "http\.server ${SEAL_HTTP_PORT} --bind " 2>/dev/null) || return 0
+    [[ -n "$pids" ]] || return 0
+    local pid
+    for pid in $pids; do
+        [[ "$pid" == "$$" ]] && continue
+        warn "Stopping a seal server left over from an earlier run (pid ${pid})."
+        kill "$pid" 2>/dev/null || true
+    done
+    sleep 0.5
+}
+
 cmd_seal() {
     domain_running || die "The guest is not running. Run '$0 build' and finish the install first."
     [[ "$PROFILE" != "sandbox" ]] \
@@ -400,11 +415,31 @@ cmd_seal() {
         -e "s|@PUBKEY@|${pubkey}|g" \
         "$SEAL_SRC" > "${serve_dir}/s"
 
+    # A server left behind by an interrupted seal keeps the port, so the new
+    # one fails to bind and the guest silently fetches the previous script.
+    # That is invisible from the guest: the command works, it just runs a stale
+    # copy with the old settings baked in.
+    stop_stale_seal_server
+
     # Keep the access log: it is how the guest reports which account it has.
     python3 -m http.server "$SEAL_HTTP_PORT" --bind "$HOST_IP" \
         --directory "$serve_dir" &>"${serve_dir}/access.log" &
     local server_pid=$!
-    trap 'kill '"$server_pid"' 2>/dev/null; rm -rf "$serve_dir"' RETURN
+    # RETURN alone does not fire when the user interrupts, which is how the
+    # stale servers accumulated in the first place.
+    trap 'kill '"$server_pid"' 2>/dev/null; rm -rf "$serve_dir"' RETURN EXIT INT TERM
+
+    local waited=0
+    while (( waited < 20 )); do
+        ss -ltn "src = ${HOST_IP}:${SEAL_HTTP_PORT}" 2>/dev/null | grep -q LISTEN && break
+        sleep 0.25
+        waited=$(( waited + 1 ))
+    done
+    if ! ss -ltn "src = ${HOST_IP}:${SEAL_HTTP_PORT}" 2>/dev/null | grep -q LISTEN; then
+        sed 's/^/    /' "${serve_dir}/access.log" >&2
+        die "The seal server did not start on ${HOST_IP}:${SEAL_HTTP_PORT}."
+    fi
+    ok "Serving on ${HOST_IP}:${SEAL_HTTP_PORT}"
 
     if command -v ufw &>/dev/null && sudo ufw status | head -1 | grep -q active; then
         sudo ufw allow in on "$VM_BRIDGE" to "$HOST_IP" port "$SEAL_HTTP_PORT" \

@@ -25,6 +25,7 @@ below simply does not arise.
 | The agent and your cursor are fighting | [Detach the viewer](#the-agent-and-your-cursor-are-fighting) | Whenever it happens |
 | Pasting into the guest does nothing | [Type it from the host instead](#you-cannot-paste-into-the-guest) | During an install |
 | Seal reports the wrong guest account | [Set GUEST_USER](#the-guest-account-name-does-not-match) | After an install |
+| Seal keeps failing the same way after a fix | [Check for a stale seal server](#seal-keeps-running-an-old-script) | After an interrupted seal |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
 | You changed the agent skill or `omarchy-ui` | [Push the change into the guest](#updating-the-agent-skill) | Whenever you edit it |
 | The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
@@ -412,6 +413,49 @@ not forget you changed it.
 sudo journalctl -u libvirtd -n 50
 sudo cat /var/log/libvirt/qemu/omarchy-agent.log | tail -40
 ```
+
+---
+
+## Seal keeps running an old script
+
+**Trigger.** You corrected something on the host, re-ran `seal`, ran the command
+in the guest again, and got the identical error. The symptom is that a fix
+appears to have no effect at all.
+
+**Why it happens.** `seal` serves the script from a short-lived HTTP server. If
+an earlier run was interrupted, its server is still holding the port. The new
+one cannot bind, and the guest fetches the previous script, with the previous
+settings compiled into it. From the guest there is nothing to see: the command
+runs, it is just the wrong copy.
+
+**Confirm.** More than one line here, or a directory you do not recognise, means
+a leftover:
+
+```bash
+pgrep -af 'http.server'
+```
+
+To see which account the served script actually carries:
+
+```bash
+grep -m1 '^GUEST_USER=' /tmp/tmp.XXXXXX/s
+```
+
+**Steps.** Current versions stop leftovers automatically and refuse to continue
+if the server does not come up. If you are on an older checkout, clear them by
+hand:
+
+```bash
+pkill -f 'http.server 8765 --bind'
+./manage-agent-vm.sh seal
+```
+
+**Confirm.** `seal` now prints `Serving on 192.168.100.1:8765` once it has
+verified the socket is listening. If you do not see that line, the script it
+serves is not the one you think.
+
+**The general lesson.** When a fix has no effect at all, suspect that the thing
+you fixed is not the thing being executed, before suspecting the fix.
 
 ---
 
