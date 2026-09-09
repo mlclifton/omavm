@@ -10,6 +10,7 @@
 #   reset     Discard all guest state and return to the base. The common one.
 #   start     Boot the VM. --gui to attach a display.
 #   stop      Shut down. --force to pull the plug.
+#   reboot    Restart the guest over ACPI, no guest password needed.
 #   gui       Attach a display to a running VM. Steals the pointer when focused.
 #   watch     Stream screenshots from the guest without touching its cursor.
 #   screenshot  Save one frame from the guest to a file.
@@ -445,7 +446,7 @@ cmd_seal() {
         seal_over_ssh
         echo
         info "Reboot the guest so the session services start, then freeze:"
-        info "  $0 ssh -- sudo reboot"
+        info "  $0 reboot"
         info "  $0 stop && $0 freeze"
         return
     fi
@@ -600,6 +601,22 @@ cmd_start() {
     info "SSH in with: $0 ssh"
 }
 
+# Reboot without needing a password in the guest. ACPI goes through the
+# hypervisor, so it works even when sudo would prompt, and when the guest agent
+# is not running.
+cmd_reboot() {
+    domain_running || die "The guest is not running."
+    stage "Rebooting the guest"
+    $VIRSH reboot "$VM_NAME" >/dev/null || die "Reboot request failed."
+    ok "ACPI reboot requested"
+    info "Session services such as spice-vdagent and ydotoold start on the next login."
+    if wait_for_ssh "$GUEST_IP" 120; then
+        ok "Guest is back"
+    else
+        warn "SSH did not come back within 120s. Check with: $0 status"
+    fi
+}
+
 cmd_stop() {
     local force=0
     [[ "${1:-}" == "--force" ]] && force=1
@@ -636,9 +653,13 @@ cmd_gui() {
 cmd_ssh() {
     domain_running || die "The guest is not running. Run: $0 start"
     [[ "${1:-}" == "--" ]] && shift
-    local host
-    host="$GUEST_IP"
-    exec ssh -i "$SSH_KEY" $SSH_OPTS "${GUEST_USER}@${host}" "$@"
+    # Allocate a terminal only when stdout is one. Without it sudo in the guest
+    # has nowhere to prompt and refuses; with it unconditionally, a piped
+    # command like `ssh -- omarchy-ui shot -` would have its binary output
+    # mangled by the pty's line-ending translation.
+    local -a tty_flag=()
+    [[ -t 1 ]] && tty_flag=(-t)
+    exec ssh "${tty_flag[@]}" -i "$SSH_KEY" $SSH_OPTS "${GUEST_USER}@${GUEST_IP}" "$@"
 }
 
 cmd_refresh() {
@@ -872,7 +893,7 @@ main() {
     local cmd="${1:-status}"
     shift || true
     case "$cmd" in
-        init|build|rebuild|seal|freeze|reset|start|stop|gui|ssh|watch|screenshot|paste|refresh|status|logs)
+        init|build|rebuild|seal|freeze|reset|start|stop|reboot|gui|ssh|watch|screenshot|paste|refresh|status|logs)
             require_libvirt_access
             "cmd_${cmd}" "$@"
             ;;
