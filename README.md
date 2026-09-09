@@ -163,8 +163,23 @@ With the guest booted to its desktop:
 ./manage-agent-vm.sh seal
 ```
 
-It prints one command to paste into a terminal inside the guest. Clipboard
-sharing is on, so pasting works.
+It prints one command to run in a terminal inside the guest.
+
+**Pasting will not work yet.** SPICE clipboard sharing needs `spice-vdagent`
+running in the guest, and that is one of the things this step installs, so it
+cannot be there before the step runs. Either type the command, or have the host
+type it for you:
+
+```bash
+./manage-agent-vm.sh paste 'curl -sL 192.168.100.1:8765/s | sudo bash' --enter
+```
+
+`paste` injects keystrokes at the virtual keyboard through qemu, below anything
+the guest is running, so it works from the firmware screen onwards and needs no
+guest agent. Click into the guest window first so the keys land there. With no
+argument it types whatever is on your host clipboard.
+
+After sealing, ordinary clipboard sharing works in both directions.
 
 Sealing installs SSH and the agent control kit, switches SSH to key-only, sets
 up `ydotoold` in the user session, configures sddm autologin so the desktop

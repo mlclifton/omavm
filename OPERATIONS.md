@@ -23,6 +23,7 @@ below simply does not arise.
 | Guest boots to a black screen after a host update | [Fall back to software rendering](#the-guest-boots-to-a-black-screen) | Rare |
 | Guest resolution is wrong or will not follow the window | [Fix the guest resolution](#the-guest-resolution-is-wrong) | Rare |
 | The agent and your cursor are fighting | [Detach the viewer](#the-agent-and-your-cursor-are-fighting) | Whenever it happens |
+| Pasting into the guest does nothing | [Type it from the host instead](#you-cannot-paste-into-the-guest) | During an install |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
 | You changed the agent skill or `omarchy-ui` | [Push the change into the guest](#updating-the-agent-skill) | Whenever you edit it |
 | The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
@@ -409,6 +410,51 @@ not forget you changed it.
 ```bash
 sudo journalctl -u libvirtd -n 50
 sudo cat /var/log/libvirt/qemu/omarchy-agent.log | tail -40
+```
+
+---
+
+## You cannot paste into the guest
+
+**Trigger.** Copying on the host and pasting into the guest does nothing.
+Usually during an install or on a guest that has not been sealed.
+
+**Why it happens.** SPICE clipboard sharing is not a property of the hypervisor
+alone. It needs an agent at each end, and the guest end is `spice-vdagent`,
+which the seal step installs. Before sealing there is nothing in the guest to
+receive the clipboard, so the host side being configured correctly changes
+nothing.
+
+**Confirm the host side is not the problem:**
+
+```bash
+virsh --connect qemu:///system dumpxml omarchy-agent | grep clipboard
+```
+
+`copypaste='yes'` means the hypervisor is willing. If it says `no`, you are on
+the sandbox profile, where clipboard sharing is off by design.
+
+**Steps.** Have the host type it instead. This injects keystrokes at the
+virtual keyboard through qemu, below anything the guest is running, so it needs
+no guest agent and works from the firmware screen onwards:
+
+```bash
+./manage-agent-vm.sh paste 'the text to type' --enter
+./manage-agent-vm.sh paste                    # or whatever is on your clipboard
+```
+
+Click into the guest window first, so the keystrokes land where you want them.
+
+**Two limits worth knowing.** It assumes a US keyboard layout in the guest:
+letters and digits are safe on any layout, but symbols are not, because a
+symbol's keycode depends on the layout. And it types one key at a time, so a
+long paste is visibly slow and anything non-ASCII is skipped with a warning.
+
+**The permanent fix** is to finish sealing. After that `spice-vdagent` is
+running and ordinary clipboard sharing works in both directions:
+
+```bash
+./manage-agent-vm.sh ssh -- systemctl is-active spice-vdagentd
 ```
 
 ---

@@ -14,6 +14,8 @@
 #   watch     Stream screenshots from the guest without touching its cursor.
 #   screenshot  Save one frame from the guest to a file.
 #   ssh       Run a command in the guest, or open a shell.
+#   paste     Type the host clipboard into the guest. Works before sealing,
+#             when SPICE clipboard sharing cannot work yet.
 #   refresh   Boot a writable copy of the base so you can update it.
 #   status    Show the profile, the domain, the share and image sizes.
 #   logs      Follow the proxy audit log (sandbox profile only).
@@ -539,6 +541,109 @@ cmd_refresh() {
     info "When done: $0 stop, then $0 freeze"
 }
 
+# Typing into the guest without a guest agent.
+#
+# SPICE clipboard sharing needs spice-vdagent running inside the guest, which
+# means it cannot work in the installer or on any guest that has not been
+# sealed yet. That is exactly when you most want to paste something.
+#
+# qemu can inject keystrokes at the virtual keyboard, below anything the guest
+# is running, so this works from the firmware screen onwards.
+#
+# Assumes a US keyboard layout in the guest. Letters and digits are safe on any
+# layout; symbols are not, because the keycode for a symbol depends on layout.
+declare -A OMAVM_SYMKEY=(
+    [' ']="KEY_SPACE"          [$'\n']="KEY_ENTER"        [$'\t']="KEY_TAB"
+    ['-']="KEY_MINUS"          ['_']="KEY_LEFTSHIFT KEY_MINUS"
+    ['=']="KEY_EQUAL"          ['+']="KEY_LEFTSHIFT KEY_EQUAL"
+    ['[']="KEY_LEFTBRACE"      ['{']="KEY_LEFTSHIFT KEY_LEFTBRACE"
+    [']']="KEY_RIGHTBRACE"     ['}']="KEY_LEFTSHIFT KEY_RIGHTBRACE"
+    ['\']="KEY_BACKSLASH"      ['|']="KEY_LEFTSHIFT KEY_BACKSLASH"
+    [';']="KEY_SEMICOLON"      [':']="KEY_LEFTSHIFT KEY_SEMICOLON"
+    ["'"]="KEY_APOSTROPHE"     ['"']="KEY_LEFTSHIFT KEY_APOSTROPHE"
+    [',']="KEY_COMMA"          ['<']="KEY_LEFTSHIFT KEY_COMMA"
+    ['.']="KEY_DOT"            ['>']="KEY_LEFTSHIFT KEY_DOT"
+    ['/']="KEY_SLASH"          ['?']="KEY_LEFTSHIFT KEY_SLASH"
+    ['`']="KEY_GRAVE"          ['~']="KEY_LEFTSHIFT KEY_GRAVE"
+    ['!']="KEY_LEFTSHIFT KEY_1"   ['@']="KEY_LEFTSHIFT KEY_2"
+    ['#']="KEY_LEFTSHIFT KEY_3"   ['$']="KEY_LEFTSHIFT KEY_4"
+    ['%']="KEY_LEFTSHIFT KEY_5"   ['^']="KEY_LEFTSHIFT KEY_6"
+    ['&']="KEY_LEFTSHIFT KEY_7"   ['*']="KEY_LEFTSHIFT KEY_8"
+    ['(']="KEY_LEFTSHIFT KEY_9"   [')']="KEY_LEFTSHIFT KEY_0"
+)
+
+keycodes_for() {
+    local c="$1"
+    case "$c" in
+        [a-z]) printf 'KEY_%s' "${c^^}" ;;
+        [A-Z]) printf 'KEY_LEFTSHIFT KEY_%s' "$c" ;;
+        [0-9]) printf 'KEY_%s' "$c" ;;
+        *)     printf '%s' "${OMAVM_SYMKEY[$c]:-}" ;;
+    esac
+}
+
+cmd_paste() {
+    local text="" press_enter=0 dry=0
+    while (( $# )); do
+        case "$1" in
+            --enter)   press_enter=1; shift ;;
+            --dry-run) dry=1; shift ;;
+            *)         text="$*"; break ;;
+        esac
+    done
+
+    domain_running || die "The guest is not running."
+
+    if [[ -z "$text" ]]; then
+        if [[ ! -t 0 ]]; then
+            text=$(cat)
+        elif command -v wl-paste &>/dev/null; then
+            text=$(wl-paste --no-newline 2>/dev/null) \
+                || die "Could not read the clipboard. Pass the text as an argument instead."
+        else
+            die "No text given, nothing on stdin, and wl-paste is not installed."
+        fi
+    fi
+    [[ -n "$text" ]] || die "Nothing to send."
+
+    local -a batch=()
+    local i c codes skipped=0
+    for (( i = 0; i < ${#text}; i++ )); do
+        c="${text:i:1}"
+        codes=$(keycodes_for "$c")
+        if [[ -z "$codes" ]]; then
+            skipped=$((skipped + 1))
+            continue
+        fi
+        batch+=("send-key $VM_NAME --holdtime 20 $codes")
+    done
+    (( press_enter )) && batch+=("send-key $VM_NAME --holdtime 20 KEY_ENTER")
+
+    (( ${#batch[@]} )) || die "Nothing in that text can be typed on a US layout."
+
+    if (( dry )); then
+        printf '%s\n' "${batch[@]}"
+        return
+    fi
+
+    stage "Typing ${#batch[@]} keystrokes into the guest"
+    info "Click into the guest window first, so the keys land where you want them."
+    # One virsh session for the whole batch. A process per character makes
+    # pasting a command line take tens of seconds.
+    #
+    # Batch mode exits 0 even when individual commands fail, so the output has
+    # to be checked rather than the status.
+    local output
+    output=$(printf '%s\n' "${batch[@]}" | $VIRSH 2>&1)
+    if grep -q '^error:' <<<"$output"; then
+        grep '^error:' <<<"$output" | head -3 | sed 's/^/    /'
+        die "Some keystrokes were rejected. The guest may have received part of the text."
+    fi
+    ok "Sent"
+    (( skipped )) && warn "$skipped character(s) skipped: not typeable on a US layout."
+    return 0
+}
+
 cmd_status() {
     stage "Status"
     printf '  %-22s %s\n' "profile" "$PROFILE"
@@ -614,7 +719,7 @@ main() {
     local cmd="${1:-status}"
     shift || true
     case "$cmd" in
-        init|build|rebuild|seal|freeze|reset|start|stop|gui|ssh|watch|screenshot|refresh|status|logs)
+        init|build|rebuild|seal|freeze|reset|start|stop|gui|ssh|watch|screenshot|paste|refresh|status|logs)
             require_libvirt_access
             "cmd_${cmd}" "$@"
             ;;
