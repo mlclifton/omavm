@@ -316,9 +316,14 @@ define_networks() {
     # provisioning step. Only the one the active profile names is autostarted.
     local ws_mode="no-autostart" sb_mode="no-autostart"
     if [[ "$PROFILE" == "sandbox" ]]; then sb_mode="autostart"; else ws_mode="autostart"; fi
-    define_one_network "$WORKSTATION_NET" "${REPO_DIR}/libvirt/agent-net.xml" "$ws_mode"
-    define_one_network "$SANDBOX_NET" "${REPO_DIR}/libvirt/agent-sandbox-net.xml" "$sb_mode"
+
+    # Order matters. libvirt refuses to define a network on a bridge another
+    # network already claims, and these have been shuffled between versions:
+    # agent-build-net is gone, and agent-sandbox-net used to own virbr-agent,
+    # which agent-net now wants. So free the old claims before making new ones.
     retire_network "agent-build-net"
+    define_one_network "$SANDBOX_NET" "${REPO_DIR}/libvirt/agent-sandbox-net.xml" "$sb_mode"
+    define_one_network "$WORKSTATION_NET" "${REPO_DIR}/libvirt/agent-net.xml" "$ws_mode"
 
     if (( DRY_RUN )); then return; fi
     if sudo virsh net-info "$SANDBOX_NET" &>/dev/null; then
@@ -330,8 +335,26 @@ define_networks() {
     fi
 }
 
+# Name of a network other than $2 that already claims bridge $1, if any.
+bridge_claimed_by() {
+    local want="$1" skip="$2" net bridge
+    while read -r net; do
+        [[ -z "$net" || "$net" == "$skip" ]] && continue
+        bridge=$(sudo virsh net-dumpxml "$net" 2>/dev/null \
+                 | grep -oP "(?<=<bridge name=')[^']+" | head -1)
+        if [[ "$bridge" == "$want" ]]; then
+            echo "$net"
+            return 0
+        fi
+    done < <(sudo virsh net-list --all --name 2>/dev/null)
+    return 1
+}
+
 define_one_network() {
     local name="$1" xml="$2" mode="$3"
+    local want_bridge want_ip
+    want_bridge=$(grep -oP "(?<=<bridge name=')[^']+" "$xml" | head -1)
+    want_ip=$(grep -oP "(?<=<ip address=')[^']+" "$xml" | head -1)
     if (( DRY_RUN )); then
         run sudo virsh net-define "$xml"
         return
@@ -340,9 +363,7 @@ define_one_network() {
         # A network defined from an older version of this repository keeps its
         # old bridge and address until something replaces it, which then looks
         # like an address collision rather than stale state.
-        local want_bridge have_bridge want_ip have_ip
-        want_bridge=$(grep -oP "(?<=<bridge name=')[^']+" "$xml" | head -1)
-        want_ip=$(grep -oP "(?<=<ip address=')[^']+" "$xml" | head -1)
+        local have_bridge have_ip
         have_bridge=$(sudo virsh net-dumpxml "$name" | grep -oP "(?<=<bridge name=')[^']+" | head -1)
         have_ip=$(sudo virsh net-dumpxml "$name" | grep -oP "(?<=<ip address=')[^']+" | head -1)
         if [[ "$want_bridge" == "$have_bridge" && "$want_ip" == "$have_ip" ]]; then
@@ -363,7 +384,20 @@ define_one_network() {
             fi
         fi
     else
-        run sudo virsh net-define "$xml"
+        # Ordering above should prevent this, but a bridge claimed by something
+        # outside this toolkit is not something the script should guess about.
+        local blocker
+        if blocker=$(bridge_claimed_by "$want_bridge" "$name"); then
+            fail "Cannot define '$name': bridge '${want_bridge}' is already used by network '${blocker}'."
+            info "Inspect it with:  sudo virsh net-dumpxml ${blocker}"
+            info "If it is not needed, remove it and re-run this script:"
+            info "    sudo virsh net-destroy ${blocker}; sudo virsh net-undefine ${blocker}"
+            return
+        fi
+        if ! run sudo virsh net-define "$xml"; then
+            fail "Could not define '$name' from $(basename "$xml")"
+            return
+        fi
         did "Defined '$name'"
     fi
     if [[ "$mode" == autostart ]]; then
