@@ -212,7 +212,10 @@ open_build_network() {
     wan=$(wan_interface)
     $VIRSH net-start "$BUILD_NET" &>/dev/null || true
     if command -v ufw &>/dev/null && sudo ufw status | head -1 | grep -q active; then
-        sudo ufw allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 67 proto udp comment 'omavm build dhcp' >/dev/null
+        # Broadcast destination, so this rule cannot be scoped to the bridge
+        # address. See the same note in install_host_deps.sh.
+        sudo ufw delete allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 67 proto udp >/dev/null 2>&1 || true
+        sudo ufw allow in on "$BUILD_BRIDGE" to any port 67 proto udp comment 'omavm build dhcp' >/dev/null
         sudo ufw allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 53 comment 'omavm build dns' >/dev/null
         sudo ufw route allow in on "$BUILD_BRIDGE" out on "$wan" comment 'omavm build nat' >/dev/null
         ok "Opened the build network for NAT out of ${wan}"
@@ -224,7 +227,7 @@ close_build_network() {
     local wan
     wan=$(wan_interface)
     if command -v ufw &>/dev/null && sudo ufw status | head -1 | grep -q active; then
-        sudo ufw delete allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 67 proto udp >/dev/null 2>&1 || true
+        sudo ufw delete allow in on "$BUILD_BRIDGE" to any port 67 proto udp >/dev/null 2>&1 || true
         sudo ufw delete allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 53 >/dev/null 2>&1 || true
         sudo ufw route delete allow in on "$BUILD_BRIDGE" out on "$wan" >/dev/null 2>&1 || true
     fi

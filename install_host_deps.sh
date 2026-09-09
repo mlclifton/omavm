@@ -363,7 +363,11 @@ configure_firewall() {
     # runs stays unreachable from the sandbox.
     info "Allowing DHCP and the two proxy ports inbound on ${SANDBOX_BRIDGE} only."
     confirm || { warn "Skipped firewall rules"; return; }
-    run sudo ufw allow in on "$SANDBOX_BRIDGE" to "$HOST_IP" port 67 proto udp comment 'omavm dhcp'
+    # DHCP DISCOVER is broadcast to 255.255.255.255, so a rule scoped to the
+    # bridge address never matches it and the guest silently gets no lease.
+    # Scoping by interface is what keeps this rule narrow.
+    run sudo ufw delete allow in on "$SANDBOX_BRIDGE" to "$HOST_IP" port 67 proto udp >/dev/null 2>&1 || true
+    run sudo ufw allow in on "$SANDBOX_BRIDGE" to any port 67 proto udp comment 'omavm dhcp'
     run sudo ufw allow in on "$SANDBOX_BRIDGE" to "$HOST_IP" port "$PROXY_PORT" proto tcp comment 'omavm proxy'
     run sudo ufw allow in on "$SANDBOX_BRIDGE" to "$HOST_IP" port "$GATEWAY_PORT" proto tcp comment 'omavm gateway'
     did "Sandbox bridge rules applied"

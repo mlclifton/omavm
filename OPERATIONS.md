@@ -18,6 +18,7 @@ to type. If a task is not in here and you find yourself doing it twice, add it.
 | Guest boots to a black screen after a host update | [Fall back to software rendering](#the-guest-boots-to-a-black-screen) | Rare |
 | Guest resolution is wrong or will not follow the window | [Fix the guest resolution](#the-guest-resolution-is-wrong) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
+| Guest has no IP address at all | [Diagnose a missing lease](#the-guest-never-gets-an-ip-address) | Rare |
 | A file you passed to the VM gives "Permission denied" | [Stage it where qemu can read it](#permission-denied-on-a-file-you-passed-to-the-vm) | Whenever it happens |
 | `/var/lib` is filling up | [Reclaim overlay space](#disk-is-filling-up) | As needed |
 
@@ -458,6 +459,59 @@ limitation. Coordinate based clicking depends on the viewport being the same
 size on every reset, and screenshots are only comparable across runs if the
 geometry does not move. Prefer changing the configured resolution over letting
 the window size decide it.
+
+---
+
+## The guest never gets an IP address
+
+**Trigger.** The guest has no address on the expected subnet. Symptoms include
+`curl` in the guest reporting it cannot connect to the host address, and SSH
+timing out with the domain running.
+
+**First, confirm it is a lease problem** rather than a routing one. An empty
+lease table with the guest transmitting is the signature:
+
+```bash
+virsh --connect qemu:///system net-dhcp-leases agent-sandbox-net
+sudo wc -c /var/lib/libvirt/dnsmasq/virbr-agent.status
+cat /sys/class/net/virbr-agent/statistics/rx_packets
+```
+
+A zero-byte status file means dnsmasq never granted a lease. A rising packet
+count means the guest is asking and getting no answer.
+
+**Why it happens.** DHCP DISCOVER is broadcast to 255.255.255.255, not sent to
+the bridge address. A ufw rule written as `to 192.168.100.1 port 67` therefore
+never matches it, the default deny drops it, and the guest waits forever. The
+rule has to be scoped by interface instead:
+
+```bash
+sudo ufw status | grep 67
+```
+
+You want to see `67/udp on virbr-agent`, not `192.168.100.1 67/udp`.
+
+**Steps.** Re-running the installer repairs both bridges. It deletes the
+address-scoped rule and replaces it with the interface-scoped one:
+
+```bash
+./install_host_deps.sh --yes
+```
+
+For the build bridge, `manage-agent-vm.sh build` and `seal` reapply it on their
+next run.
+
+**Confirm.** Restart networking in the guest, or just wait for the next DHCP
+retry, then:
+
+```bash
+virsh --connect qemu:///system net-dhcp-leases agent-sandbox-net
+```
+
+**Related.** libvirt writes its own accept rules for DHCP into its own nftables
+table, which is why this looks like it should already work. It does not help:
+with nftables, every table gets to drop a packet independently, so ufw's deny
+still wins regardless of what libvirt permits.
 
 ---
 
