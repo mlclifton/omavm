@@ -57,6 +57,30 @@ require_libvirt_access() {
 }
 
 domain_exists()  { $VIRSH dominfo "$VM_NAME" &>/dev/null; }
+
+# Starting a domain against an undefined network fails deep inside libvirt with
+# a message that says nothing about how to fix it. Check first and say what to
+# run.
+require_network() {
+    local net="$1"
+    if ! $VIRSH net-info "$net" &>/dev/null; then
+        die "The libvirt network '$net' is not defined.
+
+    Networks are created by the host installer, which is idempotent and will
+    only add what is missing:
+
+        ./install_host_deps.sh
+
+    If you have just changed PROFILE or upgraded this repository, that is
+    expected: the installer also migrates networks whose bridge or address
+    has moved."
+    fi
+    if [[ "$($VIRSH net-info "$net" 2>/dev/null | awk '/Active/{print $2}')" != "yes" ]]; then
+        $VIRSH net-start "$net" >/dev/null \
+            || die "Could not start the network '$net'. Check: $VIRSH net-info $net"
+        ok "Started network '$net'"
+    fi
+}
 domain_running() { [[ "$($VIRSH domstate "$VM_NAME" 2>/dev/null)" == "running" ]]; }
 
 current_network() {
@@ -272,6 +296,7 @@ cmd_init() {
 }
 
 cmd_rebuild() {
+    require_network "$VM_NET"
     stage "Discarding the guest and starting the install over"
     domain_running && $VIRSH destroy "$VM_NAME" >/dev/null
     sudo rm -f "$WORK_IMAGE" "$NVRAM_FILE"
@@ -294,12 +319,13 @@ cmd_build() {
     or set OMARCHY_ISO in config/omavm.conf."
     [[ -f "$WORK_IMAGE" ]] || die "No build disk. Run: $0 init"
 
+    require_network "$VM_NET"
+
     stage "Preparing installer media"
     stage_iso "$iso"
 
-    stage "Booting the installer on the build network"
+    stage "Booting the installer"
     domain_running && $VIRSH destroy "$VM_NAME" >/dev/null
-    $VIRSH net-start "$VM_NET" &>/dev/null || true
     sudo rm -f "$NVRAM_FILE"
     define_domain "$WORK_IMAGE" "$VM_NET" "$STAGED_ISO"
     $VIRSH start "$VM_NAME" >/dev/null
@@ -432,7 +458,7 @@ cmd_start() {
 
     [[ -f "$OVERLAY_IMAGE" ]] || die "No overlay. Run: $0 reset"
     stage "Starting the sandbox VM"
-    $VIRSH net-start "$VM_NET" &>/dev/null || true
+    require_network "$VM_NET"
     start_proxy
 
     if domain_running; then
@@ -488,7 +514,9 @@ cmd_ssh() {
 
 cmd_refresh() {
     [[ -f "$BASE_IMAGE" ]] || die "No base image to refresh."
-    stage "Booting the base image on the build network for updating"
+    require_network "$VM_NET"
+
+    stage "Booting a writable copy of the base image for updating"
     domain_running && $VIRSH destroy "$VM_NAME" >/dev/null
 
     # The base is read-only, so the refresh happens on a fresh writable copy
@@ -497,11 +525,10 @@ cmd_refresh() {
     sudo rm -f "$WORK_IMAGE"
     info "Copying the base to a writable image. This takes a moment."
     sudo qemu-img convert -O qcow2 "$BASE_IMAGE" "$WORK_IMAGE"
-    $VIRSH net-start "$VM_NET" &>/dev/null || true
     sudo install -m 0600 -o root -g root "$OVMF_VARS_TEMPLATE" "$NVRAM_FILE"
     define_domain "$WORK_IMAGE" "$VM_NET"
     $VIRSH start "$VM_NAME" >/dev/null
-    ok "Base running on the build network with internet access"
+    ok "Base running on $VM_NET with internet access"
     info "Update it: $0 ssh, then 'sudo pacman -Syu' and 'omarchy-update'."
     info "When done: $0 stop, then $0 freeze"
 }
