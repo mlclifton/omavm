@@ -28,6 +28,8 @@ PROXY_PORT="@PROXY_PORT@"
 GATEWAY_PORT="@GATEWAY_PORT@"
 SHARE_TAG="@SHARE_TAG@"
 SHARE_MOUNT="@SHARE_MOUNT@"
+WORKSTATION_SUBNET="@WORKSTATION_SUBNET@"
+SANDBOX_SUBNET="@SANDBOX_SUBNET@"
 SEAL_URL="@SEAL_URL@"
 PUBKEY="@PUBKEY@"
 
@@ -103,6 +105,18 @@ SSHD
 # Start it now, not just enable it. From this point the host can get in even if
 # something below goes wrong.
 systemctl enable --now sshd || fatal "sshd would not start. Check: systemctl status sshd"
+
+# Omarchy ships ufw with "default deny incoming", so a running sshd is still
+# unreachable until the port is opened. Scoped to the two subnets this VM is
+# ever on, so nothing else can reach it.
+if command -v ufw &>/dev/null && ufw status 2>/dev/null | head -1 | grep -q active; then
+    for net in "$WORKSTATION_SUBNET" "$SANDBOX_SUBNET"; do
+        ufw allow from "$net" to any port 22 proto tcp comment 'omavm ssh' >/dev/null 2>&1 \
+            || warn "could not open port 22 in the guest firewall for ${net}"
+    done
+    note "Opened port 22 in the guest firewall for the host subnets."
+fi
+
 note "SSH is up. The host can connect from here on, whatever happens below."
 
 # --------------------------------------------------------------------------
@@ -117,8 +131,34 @@ optional "installing guest agents" \
 optional "installing the agent control kit" \
     pacman -S --needed --noconfirm grim slurp wl-clipboard wtype ydotool jq
 
-systemctl enable qemu-guest-agent 2>/dev/null || warn "could not enable qemu-guest-agent"
-systemctl enable spice-vdagentd 2>/dev/null || warn "could not enable spice-vdagentd"
+systemctl enable --now qemu-guest-agent 2>/dev/null || warn "could not start qemu-guest-agent"
+systemctl enable --now spice-vdagentd 2>/dev/null || warn "could not start spice-vdagentd"
+
+# Clipboard sharing needs two processes, not one. spice-vdagentd is the system
+# daemon that talks to the host; spice-vdagent is a per-session client that
+# talks to the compositor. Without the second one the clipboard silently does
+# nothing, which is the usual reason "I enabled the agent and it still does not
+# work". Packaged as an XDG autostart entry, which Hyprland does not read
+# directly, so give it a user unit instead.
+if command -v spice-vdagent &>/dev/null; then
+    install -d -m 0755 /etc/systemd/user
+    cat > /etc/systemd/user/spice-vdagent.service <<'VDAGENT'
+[Unit]
+Description=SPICE per-session agent (clipboard, resolution)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/spice-vdagent -x
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
+VDAGENT
+    systemctl --global enable spice-vdagent.service 2>/dev/null \
+        || warn "could not enable the per-session spice-vdagent"
+fi
 
 # --------------------------------------------------------------------------
 step "Enabling synthetic input for the agent"
@@ -264,4 +304,8 @@ else
 fi
 
 echo
-echo "Next, on the host:  ./manage-agent-vm.sh stop && ./manage-agent-vm.sh freeze"
+echo "Reboot the guest before freezing. The clipboard agent and the input"
+echo "daemon are session services, so they only start at the next login:"
+echo "  ./manage-agent-vm.sh ssh -- sudo reboot"
+echo
+echo "Then, on the host:  ./manage-agent-vm.sh stop && ./manage-agent-vm.sh freeze"

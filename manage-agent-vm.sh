@@ -411,6 +411,8 @@ cmd_seal() {
         -e "s|@GATEWAY_PORT@|${GATEWAY_PORT}|g" \
         -e "s|@SHARE_TAG@|${SHARE_TAG}|g" \
         -e "s|@SHARE_MOUNT@|${SHARE_MOUNT}|g" \
+        -e "s|@WORKSTATION_SUBNET@|${WORKSTATION_SUBNET}|g" \
+        -e "s|@SANDBOX_SUBNET@|${SANDBOX_SUBNET}|g" \
         -e "s|@SEAL_URL@|http://${HOST_IP}:${SEAL_HTTP_PORT}|g" \
         -e "s|@PUBKEY@|${pubkey}|g" \
         "$SEAL_SRC" > "${serve_dir}/s"

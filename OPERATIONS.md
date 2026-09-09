@@ -26,6 +26,7 @@ below simply does not arise.
 | Pasting into the guest does nothing | [Type it from the host instead](#you-cannot-paste-into-the-guest) | During an install |
 | Typed punctuation comes out wrong | [Set the keyboard layout](#typed-punctuation-is-wrong) | Once per guest |
 | Seal stops partway with errors | [Get in over SSH and finish it](#seal-stopped-partway) | Rare |
+| Clipboard still does not work after sealing | [Start the session agent](#clipboard-does-not-work-after-sealing) | Once per guest |
 | Seal reports the wrong guest account | [Set GUEST_USER](#the-guest-account-name-does-not-match) | After an install |
 | Seal keeps failing the same way after a fix | [Check for a stale seal server](#seal-keeps-running-an-old-script) | After an interrupted seal |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
@@ -537,6 +538,59 @@ real clipboard sharing takes over and the layout stops mattering.
 
 ---
 
+## Clipboard does not work after sealing
+
+**Trigger.** The guest is sealed, `spice-vdagentd` is running, and copy and
+paste between host and guest still does nothing in either direction.
+
+**Why it happens.** Clipboard sharing needs **two** processes in the guest, and
+enabling the obvious one is not enough.
+
+| Process | Kind | What it does |
+|---|---|---|
+| `spice-vdagentd` | system service | talks to the host over the virtio channel |
+| `spice-vdagent` | per-session client | talks to the compositor holding the clipboard |
+
+The per-session client ships as an XDG autostart entry, which Hyprland does not
+read directly. Without it the daemon has nothing to exchange clipboard data
+with, and fails silently rather than complaining.
+
+**Check both:**
+
+```bash
+./manage-agent-vm.sh ssh -- systemctl is-active spice-vdagentd
+./manage-agent-vm.sh ssh -- pgrep -a spice-vdagent
+```
+
+The second must show a process **without** the trailing `d`. If only
+`spice-vdagentd` appears, that is the fault.
+
+**Steps.** Sealing installs a user unit for the session client. It starts at the
+next login, not immediately, so the guest needs a reboot:
+
+```bash
+./manage-agent-vm.sh ssh -- sudo reboot
+```
+
+If it still does not appear after that:
+
+```bash
+./manage-agent-vm.sh ssh -- systemctl --user status spice-vdagent
+```
+
+**Also check the hypervisor is willing**, which it will not be in the sandbox
+profile:
+
+```bash
+virsh --connect qemu:///system dumpxml omarchy-agent | grep clipboard
+```
+
+**Note.** The same reasoning applies to `ydotoold`, which is also a session
+service. Both need one login after sealing before they exist, which is why the
+seal step now tells you to reboot before freezing.
+
+---
+
 ## Seal stopped partway
 
 **Trigger.** The seal script printed errors in the guest and the host is still
@@ -557,8 +611,20 @@ Work through it from the host rather than re-running the whole thing:
 ./manage-agent-vm.sh ssh -- 'sudo pacman -S --needed grim ydotool wtype jq'
 ```
 
-**If SSH does not answer**, the failure was in the first step, which is almost
-always package installation. Check from inside the guest:
+**If SSH does not answer but the seal script reported no errors**, the guest's
+own firewall is the likely cause. Omarchy ships ufw with `default deny
+incoming`, so a running sshd is still unreachable until the port is opened.
+From inside the guest:
+
+```
+sudo ufw allow 22/tcp
+```
+
+Recent versions of the seal script do this for you, scoped to the host subnets.
+
+**If SSH does not answer and the script did report errors**, the failure was in
+the first step, which is almost always package installation. Check from inside
+the guest:
 
 ```
 ping -c1 archlinux.org
