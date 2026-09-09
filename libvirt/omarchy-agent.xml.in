@@ -13,6 +13,7 @@
 -->
 <domain type='kvm'>
   <name>@VM_NAME@</name>
+  @UUID_LINE@
   <memory unit='KiB'>@VM_MEM_KIB@</memory>
   <currentMemory unit='KiB'>@VM_MEM_KIB@</currentMemory>
   <vcpu placement='static'>@VM_VCPUS@</vcpu>

@@ -128,10 +128,19 @@ CDROM
         )
     fi
 
+    # An existing domain must keep its UUID. virsh define matches on UUID, and
+    # XML without one makes libvirt mint a fresh UUID and then refuse the define
+    # because the name is already taken. Redefining on every boot only works if
+    # the UUID is carried through.
+    local uuid=""
+    if domain_exists; then
+        uuid=$($VIRSH domuuid "$VM_NAME" 2>/dev/null | tr -d '[:space:]')
+    fi
+
     local rendered
     rendered=$(mktemp -t "${VM_NAME}.XXXXXX.xml")
     # shellcheck disable=SC2016
-    awk -v vm="$VM_NAME" -v mem="$mem_kib" -v vcpus="$VM_VCPUS" \
+    awk -v vm="$VM_NAME" -v uuid="$uuid" -v mem="$mem_kib" -v vcpus="$VM_VCPUS" \
         -v code="$OVMF_CODE" -v nvram="$NVRAM_FILE" -v vars="$OVMF_VARS_TEMPLATE" \
         -v disk="$disk" -v net="$network" -v mac="$GUEST_MAC" -v node="$RENDER_NODE" \
         -v accel="${ACCEL3D:-yes}" -v gl="${GL_ENABLE:-yes}" -v cdrom="$cdrom" '
@@ -140,6 +149,10 @@ CDROM
           gsub(/@OVMF_VARS_TEMPLATE@/, vars); gsub(/@DISK_IMAGE@/, disk);
           gsub(/@NETWORK@/, net); gsub(/@GUEST_MAC@/, mac); gsub(/@RENDER_NODE@/, node);
           gsub(/@ACCEL3D@/, accel); gsub(/@GL_ENABLE@/, gl);
+          if ($0 ~ /@UUID_LINE@/) {
+              if (uuid == "") next
+              sub(/@UUID_LINE@/, "<uuid>" uuid "</uuid>")
+          }
           if ($0 ~ /@CDROM_BLOCK@/) { sub(/@CDROM_BLOCK@/, cdrom) }
           print }
     ' "$TEMPLATE" > "$rendered"
@@ -150,7 +163,10 @@ define_domain() {
     local disk="$1" network="$2" iso="${3:-}"
     local xml
     xml=$(render_domain "$disk" "$network" "$iso")
-    $VIRSH define "$xml" >/dev/null
+    if ! $VIRSH define "$xml" >/dev/null; then
+        rm -f "$xml"
+        die "Failed to define the domain. The rendered XML is shown above."
+    fi
     rm -f "$xml"
 }
 
