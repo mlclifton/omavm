@@ -37,6 +37,16 @@ fi
 # XWayland, used by anything that has not been ported.
 export DISPLAY="${DISPLAY:-:0}"
 
+# The Omarchy commands read this and refuse to run without it. The graphical
+# session exports it; an SSH command does not inherit it.
+if [[ -z "${OMARCHY_PATH:-}" ]]; then
+    for _p in "$HOME/.local/share/omarchy" /usr/share/omarchy; do
+        [[ -d "$_p" ]] || continue
+        export OMARCHY_PATH="$_p"
+        break
+    done
+fi
+
 # ydotool finds its daemon through this.
 export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-${XDG_RUNTIME_DIR}/ydotoold.socket}"
 
@@ -147,13 +157,15 @@ button_code() {
 cmd_move() {
     need ydotool
     [[ $# -eq 2 ]] || die "usage: omarchy-ui move X Y"
-    ydotool mousemove -a -x "$1" -y "$2"
+    # ydotool writes its own diagnostics to stdout, which would otherwise be
+    # mixed into anything a caller is parsing. Errors still reach stderr.
+    ydotool mousemove -a -x "$1" -y "$2" >/dev/null
     settle
 }
 
 cmd_click() {
     need ydotool
-    ydotool click "$(button_code "${1:-left}")"
+    ydotool click "$(button_code "${1:-left}")" >/dev/null
     settle
 }
 
@@ -174,7 +186,7 @@ cmd_click_window() {
 cmd_scroll() {
     need ydotool
     [[ $# -eq 1 ]] || die "usage: omarchy-ui scroll <amount>   (negative scrolls up)"
-    ydotool mousemove -w -y "$1"
+    ydotool mousemove -w -y "$1" >/dev/null
     settle
 }
 
@@ -252,6 +264,27 @@ cmd_shot() {
 }
 
 # --------------------------------------------------------------------------
+# launching
+# --------------------------------------------------------------------------
+
+# Start an app in the guest session.
+#
+# Not via `hyprctl dispatch exec`: Omarchy routes hyprctl through a Lua layer,
+# where a bare command is parsed as a Lua expression and rejected. Running it
+# directly is simpler and has fewer moving parts, and the session environment
+# discovered at the top of this script is all a Wayland client needs.
+#
+# Detached, with its stdio closed, so an SSH caller is not left holding the
+# connection open for the lifetime of the app.
+cmd_launch() {
+    [[ $# -ge 1 ]] || die "usage: omarchy-ui launch <command> [args...]"
+    command -v "$1" >/dev/null || die "no such command in the guest: $1"
+    nohup "$@" >/dev/null 2>&1 </dev/null &
+    disown
+    settle
+}
+
+# --------------------------------------------------------------------------
 # clipboard
 # --------------------------------------------------------------------------
 
@@ -279,13 +312,13 @@ cmd_clip_set() {
 # twice leaves the menu closed and an agent cannot tell which happened.
 cmd_menu() {
     need omarchy-menu
-    omarchy-menu summon "${1:-root}"
+    omarchy-menu summon "${1:-root}" >/dev/null
     cmd_wait_layer omarchy-menu 3 || die "the menu did not appear. Is omarchy-shell running?"
 }
 
 cmd_menu_close() {
     need omarchy-menu
-    omarchy-menu close || true
+    omarchy-menu close >/dev/null 2>&1 || true
     settle
 }
 
@@ -344,11 +377,13 @@ cmd_doctor() {
     check "ydotool present"       "command -v ydotool"
     check "ydotoold socket"       "[ -S \"\$YDOTOOL_SOCKET\" ]"
     check "omarchy shell responds" "omarchy-shell -q shell ping"
+    check "OMARCHY_PATH resolved"  "[ -d \"$OMARCHY_PATH\" ]"
     check "clipboard readable"    "wl-paste --list-types"
     echo
     echo "  WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
     echo "  HYPRLAND_INSTANCE_SIGNATURE=${HYPRLAND_INSTANCE_SIGNATURE:-unset}"
     echo "  YDOTOOL_SOCKET=$YDOTOOL_SOCKET"
+    echo "  OMARCHY_PATH=${OMARCHY_PATH:-unset}"
     if (( failures )); then
         echo
         echo "  $failures check(s) failed. If the socket is missing, start the daemon:"
@@ -381,6 +416,9 @@ Pointer:
   at X Y [button]             move then click
   click-window <match> [btn]  click the centre of a matched window
   scroll <amount>             negative scrolls up
+
+Launch:
+  launch <command>            start an app in the guest session
 
 Clipboard:
   clip-get                    print the guest clipboard
@@ -421,6 +459,7 @@ case "${1:-}" in
     scroll)       shift; cmd_scroll "$@" ;;
     type)         shift; cmd_type "$@" ;;
     key)          shift; cmd_key "$@" ;;
+    launch)       shift; cmd_launch "$@" ;;
     clip-get)     shift; cmd_clip_get "$@" ;;
     clip-set)     shift; cmd_clip_set "$@" ;;
     menu)         shift; cmd_menu "$@" ;;

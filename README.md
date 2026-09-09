@@ -128,7 +128,8 @@ describes the workstation profile.
 | `proxy/` | Allowlisting proxy and credential gateway. Sandbox profile only. |
 | `guest/seal-guest.sh` | Runs once inside the guest to prepare it. |
 | `guest/skills/omarchy-ui/` | The agent skill and the `omarchy-ui` command. |
-| `OPERATIONS.md` | **Read this.** Every recurring manual task, with its trigger. |
+| `TUTORIAL.md` | **Start here.** A worked walkthrough of driving the desktop. |
+| `OPERATIONS.md` | Every recurring manual task, with its trigger. |
 
 ---
 
