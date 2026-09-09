@@ -35,12 +35,25 @@ if [[ $EUID -ne 0 ]]; then
     exec sudo -E bash "$0" "$@"
 fi
 
+# The account name is chosen during the Omarchy install and the host has no way
+# to know it in advance. Rather than insisting the two match, take the account
+# that invoked sudo and tell the host what it was.
 if ! id "$GUEST_USER" &>/dev/null; then
-    echo "seal-guest: no such user '$GUEST_USER' in this guest." >&2
-    echo "Set GUEST_USER in config/omavm.conf to the account you created" >&2
-    echo "during the Omarchy install, then run the seal step again." >&2
-    exit 1
+    if [[ -n "${SUDO_USER:-}" ]] && id "$SUDO_USER" &>/dev/null && [[ "$SUDO_USER" != root ]]; then
+        echo "seal-guest: no user '$GUEST_USER' here; using '$SUDO_USER' instead." >&2
+        GUEST_USER="$SUDO_USER"
+    else
+        echo "seal-guest: no such user '$GUEST_USER' in this guest, and could not" >&2
+        echo "work out which account you are using. Set GUEST_USER in" >&2
+        echo "config/omavm.conf and run the seal step again." >&2
+        exit 1
+    fi
 fi
+
+# Report the account back over the same server that served this script, so the
+# host knows which user to connect as. The request 404s; the point is the entry
+# it leaves in the server's access log.
+curl -s -o /dev/null "${SEAL_URL}/whoami/${GUEST_USER}" 2>/dev/null || true
 
 step() { printf '\n\033[1;34m==>\033[0m %s\n' "$1"; }
 

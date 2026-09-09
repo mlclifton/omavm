@@ -24,6 +24,7 @@ below simply does not arise.
 | Guest resolution is wrong or will not follow the window | [Fix the guest resolution](#the-guest-resolution-is-wrong) | Rare |
 | The agent and your cursor are fighting | [Detach the viewer](#the-agent-and-your-cursor-are-fighting) | Whenever it happens |
 | Pasting into the guest does nothing | [Type it from the host instead](#you-cannot-paste-into-the-guest) | During an install |
+| Seal reports the wrong guest account | [Set GUEST_USER](#the-guest-account-name-does-not-match) | After an install |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
 | You changed the agent skill or `omarchy-ui` | [Push the change into the guest](#updating-the-agent-skill) | Whenever you edit it |
 | The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
@@ -411,6 +412,38 @@ not forget you changed it.
 sudo journalctl -u libvirtd -n 50
 sudo cat /var/log/libvirt/qemu/omarchy-agent.log | tail -40
 ```
+
+---
+
+## The guest account name does not match
+
+**Trigger.** The seal command fails in the guest with `no such user 'agent'`,
+or `manage-agent-vm.sh ssh` cannot log in after a successful seal.
+
+**Why it happens.** The account name is chosen during the Omarchy install, and
+the host has no way to know it in advance. The configured `GUEST_USER` and the
+account you actually created have drifted apart.
+
+**Steps.** Sealing recovers on its own: the guest script falls back to the
+account that invoked `sudo`, reports that name back to the host, and the host
+switches to it for the rest of the run. It prints a warning saying which name
+it found.
+
+Make it permanent, or every later command will keep looking for the old name:
+
+```bash
+sed -i 's/^GUEST_USER=.*/GUEST_USER="thename"/' config/omavm.conf
+```
+
+**Confirm.**
+
+```bash
+./manage-agent-vm.sh ssh -- id -un
+```
+
+**If you have already frozen a base** with the wrong name in the config, only
+the config is wrong, not the image. Change it and carry on; there is no need to
+re-seal or rebuild.
 
 ---
 

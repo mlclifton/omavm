@@ -257,6 +257,33 @@ guest_exec() {
     ssh -i "$SSH_KEY" $SSH_OPTS -o BatchMode=yes "${GUEST_USER}@${GUEST_IP}" "$@"
 }
 
+# The seal script inside the guest requests /whoami/<user>. Watch the server's
+# access log for it, so the host learns the real account name rather than
+# assuming the configured one is right.
+wait_for_guest_user() {
+    local log="$1" timeout="${2:-900}" i=0 line name
+    printf '    waiting for the guest to run it ' >&2
+    while (( i < timeout * 2 )); do
+        # Match the whole path segment against what a user name may contain,
+        # rather than extracting loosely and validating after. A path with
+        # slashes in it then never matches at all, instead of being reduced to
+        # its last component and passing as a plausible name.
+        line=$(grep -oE 'GET /whoami/[A-Za-z0-9_][A-Za-z0-9_-]{0,31} ' "$log" 2>/dev/null | tail -1) || true
+        if [[ -n "$line" ]]; then
+            name="${line#GET /whoami/}"
+            name="${name% }"
+            printf ' reported\n' >&2
+            echo "$name"
+            return 0
+        fi
+        (( i % 20 == 0 )) && printf '.' >&2
+        sleep 0.5
+        i=$(( i + 1 ))
+    done
+    printf ' no report\n' >&2
+    return 0
+}
+
 wait_for_ssh() {
     local host="$1" timeout="${2:-180}" elapsed=0
     printf '    waiting for ssh on %s ' "$host"
@@ -373,8 +400,9 @@ cmd_seal() {
         -e "s|@PUBKEY@|${pubkey}|g" \
         "$SEAL_SRC" > "${serve_dir}/s"
 
+    # Keep the access log: it is how the guest reports which account it has.
     python3 -m http.server "$SEAL_HTTP_PORT" --bind "$HOST_IP" \
-        --directory "$serve_dir" &>/dev/null &
+        --directory "$serve_dir" &>"${serve_dir}/access.log" &
     local server_pid=$!
     trap 'kill '"$server_pid"' 2>/dev/null; rm -rf "$serve_dir"' RETURN
 
@@ -389,6 +417,16 @@ cmd_seal() {
     info "Clipboard sharing is on during a build, so you can paste this."
     info "It is off on the sandbox network, where an agent could abuse it."
     info "This script waits until the guest accepts the new SSH key."
+
+    local reported
+    reported=$(wait_for_guest_user "${serve_dir}/access.log" 900)
+    if [[ -n "$reported" && "$reported" != "$GUEST_USER" ]]; then
+        warn "The guest account is '${reported}', not '${GUEST_USER}'."
+        info "Sealing continues with '${reported}'. To make that permanent, set"
+        info "GUEST_USER=\"${reported}\" in config/omavm.conf, otherwise ssh and"
+        info "the other commands will keep looking for '${GUEST_USER}'."
+        GUEST_USER="$reported"
+    fi
 
     if wait_for_ssh "$GUEST_IP" 900; then
         ok "Guest sealed and reachable over SSH"
