@@ -575,6 +575,7 @@ cmd_stop() {
 
 cmd_gui() {
     domain_running || die "The guest is not running."
+    apply_keyboard_layout
     command -v virt-viewer &>/dev/null || die "virt-viewer is not installed."
     stage "Attaching a display"
     # --attach is required: with GL enabled the SPICE server has no network
@@ -625,6 +626,26 @@ cmd_refresh() {
 #
 # Assumes a US keyboard layout in the guest. Letters and digits are safe on any
 # layout; symbols are not, because the keycode for a symbol depends on layout.
+# The guest's keyboard layout decides which physical key carries which symbol.
+# Letters and digits are the same everywhere; symbols are not. Getting this
+# wrong is silent: the text arrives, with the wrong punctuation in it.
+apply_keyboard_layout() {
+    case "${KEYBOARD_LAYOUT:-us}" in
+        us) ;;
+        gb|uk)
+            OMAVM_SYMKEY['"']="KEY_LEFTSHIFT KEY_2"
+            OMAVM_SYMKEY['@']="KEY_LEFTSHIFT KEY_APOSTROPHE"
+            OMAVM_SYMKEY['#']="KEY_BACKSLASH"
+            OMAVM_SYMKEY['~']="KEY_LEFTSHIFT KEY_BACKSLASH"
+            OMAVM_SYMKEY['\']="KEY_102ND"
+            OMAVM_SYMKEY['|']="KEY_LEFTSHIFT KEY_102ND"
+            ;;
+        *)
+            die "Unknown KEYBOARD_LAYOUT '${KEYBOARD_LAYOUT}'. Supported: us, gb."
+            ;;
+    esac
+}
+
 declare -A OMAVM_SYMKEY=(
     [' ']="KEY_SPACE"          [$'\n']="KEY_ENTER"        [$'\t']="KEY_TAB"
     ['-']="KEY_MINUS"          ['_']="KEY_LEFTSHIFT KEY_MINUS"
@@ -656,16 +677,24 @@ keycodes_for() {
 }
 
 cmd_paste() {
-    local text="" press_enter=0 dry=0
+    # Flags are recognised wherever they appear. Stopping at the first
+    # non-flag argument meant a trailing --enter was typed into the guest as
+    # literal text, which is exactly where it reads most naturally.
+    local press_enter=0 dry=0
+    local -a words=()
     while (( $# )); do
         case "$1" in
-            --enter)   press_enter=1; shift ;;
-            --dry-run) dry=1; shift ;;
-            *)         text="$*"; break ;;
+            --enter)   press_enter=1 ;;
+            --dry-run) dry=1 ;;
+            --)        shift; words+=("$@"); break ;;
+            *)         words+=("$1") ;;
         esac
+        shift
     done
+    local text="${words[*]}"
 
     domain_running || die "The guest is not running."
+    apply_keyboard_layout
 
     if [[ -z "$text" ]]; then
         if [[ ! -t 0 ]]; then
@@ -692,7 +721,7 @@ cmd_paste() {
     done
     (( press_enter )) && batch+=("send-key $VM_NAME --holdtime 20 KEY_ENTER")
 
-    (( ${#batch[@]} )) || die "Nothing in that text can be typed on a US layout."
+    (( ${#batch[@]} )) || die "Nothing in that text can be typed on that layout."
 
     if (( dry )); then
         printf '%s\n' "${batch[@]}"
@@ -713,7 +742,9 @@ cmd_paste() {
         die "Some keystrokes were rejected. The guest may have received part of the text."
     fi
     ok "Sent"
-    (( skipped )) && warn "$skipped character(s) skipped: not typeable on a US layout."
+    (( skipped )) && warn "$skipped character(s) skipped: not typeable on a ${KEYBOARD_LAYOUT} layout."
+    info "If the punctuation came out wrong, the guest layout is not '${KEYBOARD_LAYOUT}'."
+    info "Set KEYBOARD_LAYOUT in config/omavm.conf, or OMAVM_KEYBOARD_LAYOUT for one run."
     return 0
 }
 
@@ -754,6 +785,7 @@ cmd_status() {
 # screendump a virgl guest, it reports "no surface".
 cmd_watch() {
     domain_running || die "The guest is not running."
+    apply_keyboard_layout
     local interval="${1:-2}" out
     out=$(mktemp -t "omavm-watch.XXXXXX.png")
     command -v imv &>/dev/null || command -v swayimg &>/dev/null \
@@ -773,6 +805,7 @@ cmd_watch() {
 
 cmd_screenshot() {
     domain_running || die "The guest is not running."
+    apply_keyboard_layout
     local out="${1:-omavm-$(date +%Y%m%d-%H%M%S).png}"
     guest_exec "grim -" > "$out" || die "Capture failed. Is a graphical session running in the guest?"
     [[ -s "$out" ]] || die "Capture produced an empty file."

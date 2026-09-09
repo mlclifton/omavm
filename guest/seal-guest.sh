@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
 #
-# Runs INSIDE the Omarchy guest, once, at the end of the interactive install.
-# manage-agent-vm.sh renders the placeholders and serves this over the build
-# bridge; you fetch and run it with the single command that command prints.
+# Runs INSIDE the Omarchy guest, once, after the interactive install.
+# manage-agent-vm.sh renders the placeholders and serves this over the network;
+# you fetch and run it with the single command that command prints.
 #
-# It provisions remote access, points the guest at the host proxy, and removes
-# the per-install state that would otherwise make every reset slightly
-# different from the last.
+# It provisions remote access, installs the agent control kit, points the guest
+# at the host, and removes the per-install state that would otherwise make
+# every reset slightly different from the last.
+#
+# Ordering is deliberate: SSH is enabled and started as early as possible, so
+# that if any later step fails you can still get in from the host and see what
+# happened, instead of being locked out of a guest that is almost ready.
 #
 # Deliberately NOT removed: the SSH host keys. Regenerating them would change
 # the guest fingerprint on every reset and train you to click through host key
-# warnings, which is exactly the habit that makes a man-in-the-middle warning
-# useless. Keeping them means a fingerprint change is a real signal.
-#
-# Also deliberately NOT removed: /etc/machine-id. A stable machine id keeps the
-# DHCP client identifier stable, so the guest always receives the reserved
-# address, and makes resets byte-for-byte more repeatable.
+# warnings, which is the habit that makes such a warning useless. Also kept:
+# /etc/machine-id, so the DHCP client identifier is stable and the guest always
+# receives its reserved address.
 
-set -euo pipefail
+set -uo pipefail
 
 GUEST_USER="@GUEST_USER@"
 VM_HOSTNAME="@VM_NAME@"
@@ -30,52 +31,62 @@ SHARE_MOUNT="@SHARE_MOUNT@"
 SEAL_URL="@SEAL_URL@"
 PUBKEY="@PUBKEY@"
 
+WARNINGS=()
+
+step() { printf '\n\033[1;34m==>\033[0m %s\n' "$1"; }
+note() { printf '    %s\n' "$1"; }
+warn() { printf '  \033[1;33m!\033[0m %s\n' "$1"; WARNINGS+=("$1"); }
+fatal() { printf '  \033[1;31m✘\033[0m %s\n' "$1" >&2; exit 1; }
+
+# Run a step that is worth having but not worth aborting for. A failure here
+# leaves a usable guest and a message at the end, rather than a half-sealed one.
+optional() {
+    local what="$1"; shift
+    if ! "$@"; then
+        warn "${what} failed. The guest still works; see the summary below."
+        return 1
+    fi
+}
+
 if [[ $EUID -ne 0 ]]; then
     echo "seal-guest: re-running under sudo" >&2
     exec sudo -E bash "$0" "$@"
 fi
 
+# --------------------------------------------------------------------------
 # The account name is chosen during the Omarchy install and the host has no way
 # to know it in advance. Rather than insisting the two match, take the account
 # that invoked sudo and tell the host what it was.
 if ! id "$GUEST_USER" &>/dev/null; then
     if [[ -n "${SUDO_USER:-}" ]] && id "$SUDO_USER" &>/dev/null && [[ "$SUDO_USER" != root ]]; then
-        echo "seal-guest: no user '$GUEST_USER' here; using '$SUDO_USER' instead." >&2
+        note "No user '$GUEST_USER' here; using '$SUDO_USER' instead."
         GUEST_USER="$SUDO_USER"
     else
-        echo "seal-guest: no such user '$GUEST_USER' in this guest, and could not" >&2
-        echo "work out which account you are using. Set GUEST_USER in" >&2
-        echo "config/omavm.conf and run the seal step again." >&2
-        exit 1
+        fatal "No such user '$GUEST_USER', and could not work out which account you use.
+    Set GUEST_USER in config/omavm.conf and run the seal step again."
     fi
 fi
+HOME_DIR=$(getent passwd "$GUEST_USER" | cut -d: -f6)
+[[ -d "$HOME_DIR" ]] || fatal "No home directory for '$GUEST_USER'."
 
 # Report the account back over the same server that served this script, so the
 # host knows which user to connect as. The request 404s; the point is the entry
 # it leaves in the server's access log.
 curl -s -o /dev/null "${SEAL_URL}/whoami/${GUEST_USER}" 2>/dev/null || true
 
-step() { printf '\n\033[1;34m==>\033[0m %s\n' "$1"; }
-
 # --------------------------------------------------------------------------
-step "Installing guest support packages"
-# Needs working internet, which is why sealing runs under the workstation
-# profile even if you intend to use the guest in the sandbox profile later.
-#
-# The second group is the agent control kit. An agent driving this desktop
-# reads it with grim and hyprctl and acts on it with ydotool and wtype, all
-# over SSH, so it never needs a viewer attached and never touches your host
-# cursor.
-pacman -Sy --needed --noconfirm \
-    openssh qemu-guest-agent spice-vdagent \
-    grim slurp wl-clipboard wtype ydotool jq
+step "Installing remote access"
+# Everything else can be repaired over SSH, so this is the one group whose
+# failure is fatal.
+if ! pacman -Sy --needed --noconfirm openssh; then
+    fatal "Could not install openssh. Check the guest has working internet:
+    ping -c1 archlinux.org"
+fi
 
-# --------------------------------------------------------------------------
-step "Configuring SSH for key-only access"
-install -d -m 0700 -o "$GUEST_USER" -g "$GUEST_USER" "/home/${GUEST_USER}/.ssh"
-printf '%s\n' "$PUBKEY" > "/home/${GUEST_USER}/.ssh/authorized_keys"
-chown "${GUEST_USER}:${GUEST_USER}" "/home/${GUEST_USER}/.ssh/authorized_keys"
-chmod 0600 "/home/${GUEST_USER}/.ssh/authorized_keys"
+install -d -m 0700 -o "$GUEST_USER" -g "$GUEST_USER" "${HOME_DIR}/.ssh"
+printf '%s\n' "$PUBKEY" > "${HOME_DIR}/.ssh/authorized_keys"
+chown "${GUEST_USER}:${GUEST_USER}" "${HOME_DIR}/.ssh/authorized_keys"
+chmod 0600 "${HOME_DIR}/.ssh/authorized_keys"
 
 install -d -m 0755 /etc/ssh/sshd_config.d
 cat > /etc/ssh/sshd_config.d/10-omavm.conf <<'SSHD'
@@ -88,32 +99,45 @@ X11Forwarding no
 AllowAgentForwarding no
 AllowTcpForwarding no
 SSHD
-systemctl enable sshd
+
+# Start it now, not just enable it. From this point the host can get in even if
+# something below goes wrong.
+systemctl enable --now sshd || fatal "sshd would not start. Check: systemctl status sshd"
+note "SSH is up. The host can connect from here on, whatever happens below."
 
 # --------------------------------------------------------------------------
-step "Enabling guest agent and display agent"
-# qemu-guest-agent gives the host clean ACPI shutdown and state queries without
-# opening another network path. spice-vdagent lets the guest Hyprland session
-# follow the viewer window size.
-systemctl enable qemu-guest-agent
-systemctl enable spice-vdagentd
+step "Installing the guest agents and the agent control kit"
+# spice-vdagent is what makes host clipboard sharing work at all, and
+# qemu-guest-agent gives the host clean shutdown and state queries.
+optional "installing guest agents" \
+    pacman -S --needed --noconfirm qemu-guest-agent spice-vdagent
+
+# An agent driving this desktop reads it with grim and hyprctl and acts on it
+# with ydotool and wtype. jq parses the compositor's JSON.
+optional "installing the agent control kit" \
+    pacman -S --needed --noconfirm grim slurp wl-clipboard wtype ydotool jq
+
+systemctl enable qemu-guest-agent 2>/dev/null || warn "could not enable qemu-guest-agent"
+systemctl enable spice-vdagentd 2>/dev/null || warn "could not enable spice-vdagentd"
 
 # --------------------------------------------------------------------------
 step "Enabling synthetic input for the agent"
 # ydotool injects through /dev/uinput, which is independent of SPICE. That is
 # what keeps agent input from fighting the host pointer: events originate
-# inside the guest rather than arriving from the viewer.
-echo uinput > /etc/modules-load.d/omavm-uinput.conf
-modprobe uinput 2>/dev/null || true
-cat > /etc/udev/rules.d/60-omavm-uinput.rules <<'UDEV'
+# inside the guest rather than arriving from a viewer.
+if command -v ydotoold &>/dev/null; then
+    echo uinput > /etc/modules-load.d/omavm-uinput.conf
+    modprobe uinput 2>/dev/null || true
+    cat > /etc/udev/rules.d/60-omavm-uinput.rules <<'UDEV'
 KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
 UDEV
-usermod -aG input "$GUEST_USER"
+    usermod -aG input "$GUEST_USER"
 
-# Run the daemon in the user session so its socket belongs to the agent user.
-# The packaged system unit puts a root-owned socket in /tmp, which the agent
-# then cannot use without sudo on every single call.
-cat > /etc/systemd/user/ydotoold.service <<'YDOTOOL'
+    # Run the daemon in the user session so its socket belongs to the agent
+    # user. The packaged system unit puts a root-owned socket in /tmp, which
+    # the agent then cannot use without sudo on every single call.
+    install -d -m 0755 /etc/systemd/user
+    cat > /etc/systemd/user/ydotoold.service <<'YDOTOOL'
 [Unit]
 Description=ydotool daemon (user session)
 
@@ -125,33 +149,31 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 YDOTOOL
-systemctl --global enable ydotoold.service
+    systemctl --global enable ydotoold.service 2>/dev/null \
+        || warn "could not enable ydotoold; run 'omarchy-ui doctor' in the guest"
+else
+    warn "ydotool is not installed, so the agent will not be able to click or move the pointer"
+fi
 
 # --------------------------------------------------------------------------
 step "Installing the omarchy-ui agent skill"
-# The skill teaches an agent to drive this desktop through the compositor's own
-# IPC rather than by guessing at pixels, and omarchy-ui is the command it uses.
-# Both come from the host over the same short-lived HTTP server that served
-# this script.
 if curl -fsSL "${SEAL_URL}/skills.tar.gz" | tar -xz -C /tmp 2>/dev/null; then
-    install -m 0755 /tmp/omarchy-ui/scripts/omarchy-ui /usr/local/bin/omarchy-ui
-    install -d -m 0755 -o "$GUEST_USER" -g "$GUEST_USER" \
-        "/home/${GUEST_USER}/.claude" "/home/${GUEST_USER}/.claude/skills" \
-        "/home/${GUEST_USER}/.claude/skills/omarchy-ui"
-    install -m 0644 -o "$GUEST_USER" -g "$GUEST_USER" \
-        /tmp/omarchy-ui/SKILL.md "/home/${GUEST_USER}/.claude/skills/omarchy-ui/SKILL.md"
+    install -m 0755 /tmp/omarchy-ui/scripts/omarchy-ui /usr/local/bin/omarchy-ui \
+        && install -d -m 0755 -o "$GUEST_USER" -g "$GUEST_USER" \
+            "${HOME_DIR}/.claude" "${HOME_DIR}/.claude/skills" "${HOME_DIR}/.claude/skills/omarchy-ui" \
+        && install -m 0644 -o "$GUEST_USER" -g "$GUEST_USER" \
+            /tmp/omarchy-ui/SKILL.md "${HOME_DIR}/.claude/skills/omarchy-ui/SKILL.md" \
+        && note "omarchy-ui installed; the skill is available to agents run as ${GUEST_USER}" \
+        || warn "could not install the omarchy-ui skill"
     rm -rf /tmp/omarchy-ui
-    echo "  omarchy-ui installed, skill available to agents run as ${GUEST_USER}"
 else
-    echo "  WARNING: could not fetch the skill bundle. The desktop still works," >&2
-    echo "  but agents will not have omarchy-ui. Re-run the seal step." >&2
+    warn "could not fetch the skill bundle from the host"
 fi
 
 # --------------------------------------------------------------------------
 step "Configuring the host file share"
 # nofail matters: the share is optional and absent in the sandbox profile, so
-# without it the guest would drop to an emergency shell whenever it is not
-# attached.
+# without it the guest would drop to an emergency shell when it is not there.
 install -d -m 0755 "$SHARE_MOUNT"
 if ! grep -q "^${SHARE_TAG}[[:space:]]" /etc/fstab; then
     printf '%s %s virtiofs defaults,nofail,x-systemd.device-timeout=5s 0 0\n' \
@@ -170,20 +192,18 @@ NMCONF
 
 # --------------------------------------------------------------------------
 step "Writing the guest environment"
-# The proxy variables apply only in the sandbox profile, detected by the guest
-# address. Under the workstation profile the guest has ordinary NAT internet
-# and exporting a proxy that is not there would break everything.
 # Dots are regex metacharacters; an unescaped prefix would match addresses it
 # should not, such as 192x168x101.
 SANDBOX_PREFIX_RE="${SANDBOX_PREFIX//./\\.}"
 cat > /etc/profile.d/omavm-proxy.sh <<PROFILE
 # Managed by omavm seal-guest.sh. Do not edit in the guest; edit the seal
 # script on the host and re-seal, otherwise your change is lost at next reset.
+
 # ydotool talks to the daemon in this user's session.
 export YDOTOOL_SOCKET="\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}/ydotoold.socket"
 
-# Sandbox profile only. Under the workstation profile the guest has ordinary
-# NAT internet and none of this applies.
+# Sandbox profile only, detected by the guest address. Under the workstation
+# profile the guest has ordinary NAT internet and none of this applies.
 if ip -4 -brief addr show 2>/dev/null | grep -q " ${SANDBOX_PREFIX_RE}\\."; then
     export http_proxy="http://${SANDBOX_HOST_IP}:${PROXY_PORT}"
     export https_proxy="\$http_proxy"
@@ -214,33 +234,34 @@ hostnamectl set-hostname "$VM_HOSTNAME" 2>/dev/null || echo "$VM_HOSTNAME" > /et
 
 # --------------------------------------------------------------------------
 step "Removing per-install state"
-journalctl --rotate --quiet || true
-journalctl --vacuum-time=1s --quiet || true
-rm -rf /var/log/journal/* /var/tmp/* /tmp/* 2>/dev/null || true
+journalctl --rotate --quiet 2>/dev/null || true
+journalctl --vacuum-time=1s --quiet 2>/dev/null || true
+rm -rf /var/log/journal/* /var/tmp/* 2>/dev/null || true
 pacman -Scc --noconfirm >/dev/null 2>&1 || true
-rm -f /root/.bash_history "/home/${GUEST_USER}/.bash_history" 2>/dev/null || true
+rm -f /root/.bash_history "${HOME_DIR}/.bash_history" 2>/dev/null || true
 rm -f /var/lib/systemd/random-seed 2>/dev/null || true
-# Zero free space so the base image compacts well when it is frozen.
-fstrim -av 2>/dev/null || true
+fstrim -av >/dev/null 2>&1 || true
 
 # --------------------------------------------------------------------------
-step "Recording the SSH host key fingerprint"
+step "Done"
 echo
-echo "Record this fingerprint. It must not change across resets:"
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
+echo "Record this SSH host key fingerprint. It must not change across resets:"
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null || true
 
-touch /etc/omavm-sealed
 date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/omavm-sealed
 
+if (( ${#WARNINGS[@]} )); then
+    echo
+    printf '\033[1;33m%d step(s) did not complete:\033[0m\n' "${#WARNINGS[@]}"
+    printf '  - %s\n' "${WARNINGS[@]}"
+    echo
+    echo "SSH still works, so you can fix these from the host:"
+    echo "  ./manage-agent-vm.sh ssh"
+    echo "  ./manage-agent-vm.sh ssh -- omarchy-ui doctor"
+else
+    echo
+    echo "Sealed cleanly. Account: ${GUEST_USER}"
+fi
+
 echo
-echo "Guest sealed. Shut it down now, then run: ./manage-agent-vm.sh freeze"
-echo
-echo "An agent drives this desktop with omarchy-ui, which is on PATH:"
-echo "  omarchy-ui doctor               check the environment"
-echo "  omarchy-ui windows              window geometry from the compositor"
-echo "  omarchy-ui shot                 screenshot, prints the path"
-echo "  omarchy-ui click-window <match> click a window by class or title"
-echo "  omarchy-ui menu system          open an Omarchy menu route"
-echo
-echo "The omarchy-ui skill is installed for ${GUEST_USER}, so an agent running"
-echo "as that user picks it up without being told about it."
+echo "Next, on the host:  ./manage-agent-vm.sh stop && ./manage-agent-vm.sh freeze"

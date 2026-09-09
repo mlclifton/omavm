@@ -171,7 +171,15 @@ cannot be there before the step runs. Either type the command, or have the host
 type it for you:
 
 ```bash
-./manage-agent-vm.sh paste 'curl -sL 192.168.100.1:8765/s | sudo bash' --enter
+./manage-agent-vm.sh paste --enter 'curl -sL 192.168.100.1:8765/s | sudo bash'
+```
+
+If the punctuation arrives wrong, for instance a pipe appearing as a tilde, the
+guest is not on a US keyboard layout. Set `KEYBOARD_LAYOUT` in
+`config/omavm.conf`, or for one run:
+
+```bash
+OMAVM_KEYBOARD_LAYOUT=gb ./manage-agent-vm.sh paste --enter 'curl -sL ...'
 ```
 
 `paste` injects keystrokes at the virtual keyboard through qemu, below anything

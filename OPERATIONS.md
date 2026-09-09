@@ -24,6 +24,8 @@ below simply does not arise.
 | Guest resolution is wrong or will not follow the window | [Fix the guest resolution](#the-guest-resolution-is-wrong) | Rare |
 | The agent and your cursor are fighting | [Detach the viewer](#the-agent-and-your-cursor-are-fighting) | Whenever it happens |
 | Pasting into the guest does nothing | [Type it from the host instead](#you-cannot-paste-into-the-guest) | During an install |
+| Typed punctuation comes out wrong | [Set the keyboard layout](#typed-punctuation-is-wrong) | Once per guest |
+| Seal stops partway with errors | [Get in over SSH and finish it](#seal-stopped-partway) | Rare |
 | Seal reports the wrong guest account | [Set GUEST_USER](#the-guest-account-name-does-not-match) | After an install |
 | Seal keeps failing the same way after a fix | [Check for a stale seal server](#seal-keeps-running-an-old-script) | After an interrupted seal |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
@@ -488,6 +490,94 @@ sed -i 's/^GUEST_USER=.*/GUEST_USER="thename"/' config/omavm.conf
 **If you have already frozen a base** with the wrong name in the config, only
 the config is wrong, not the image. Change it and carry on; there is no need to
 re-seal or rebuild.
+
+---
+
+## Typed punctuation is wrong
+
+**Trigger.** `manage-agent-vm.sh paste` puts the right letters in the guest but
+the wrong symbols. A pipe arriving as a tilde is the classic one.
+
+**Why it happens.** `paste` types at the virtual keyboard, so it sends key
+positions, not characters. Which symbol a position produces is decided by the
+layout configured **in the guest**, chosen during the Omarchy install. Letters
+and digits are the same on every layout. Punctuation is not.
+
+A pipe becoming a tilde means the guest is on a UK layout while the host is
+sending US positions. On US, the key next to Enter is `\` and shifted gives
+`|`. On UK, that same key is `#` and shifted gives `~`; the pipe lives on the
+key to the left of Z instead.
+
+**Steps.**
+
+```bash
+sed -i 's/^KEYBOARD_LAYOUT=.*/KEYBOARD_LAYOUT="${OMAVM_KEYBOARD_LAYOUT:-gb}"/' config/omavm.conf
+```
+
+Or for a single run, without changing anything:
+
+```bash
+OMAVM_KEYBOARD_LAYOUT=gb ./manage-agent-vm.sh paste --enter 'some | text'
+```
+
+Supported values are `us` and `gb`. Add more in `apply_keyboard_layout` in
+`manage-agent-vm.sh`.
+
+**Confirm.**
+
+```bash
+./manage-agent-vm.sh paste --dry-run 'a|b'
+```
+
+Under `gb` the pipe should be `KEY_LEFTSHIFT KEY_102ND`, under `us`
+`KEY_LEFTSHIFT KEY_BACKSLASH`.
+
+**Note.** This setting affects nothing except `paste`. Once the guest is sealed,
+real clipboard sharing takes over and the layout stops mattering.
+
+---
+
+## Seal stopped partway
+
+**Trigger.** The seal script printed errors in the guest and the host is still
+sitting at `waiting for ssh`.
+
+**First, find out how far it got.** If SSH answers, the script got past the
+remote access step and everything else can be fixed from the host:
+
+```bash
+./manage-agent-vm.sh ssh -- true && echo "ssh is up"
+```
+
+**If SSH answers**, the seal script prints a summary of what did not complete.
+Work through it from the host rather than re-running the whole thing:
+
+```bash
+./manage-agent-vm.sh ssh -- omarchy-ui doctor
+./manage-agent-vm.sh ssh -- 'sudo pacman -S --needed grim ydotool wtype jq'
+```
+
+**If SSH does not answer**, the failure was in the first step, which is almost
+always package installation. Check from inside the guest:
+
+```
+ping -c1 archlinux.org
+sudo pacman -Sy openssh
+```
+
+The usual causes are no working internet on the guest, or a pacman keyring that
+needs initialising after a long-unused ISO:
+
+```
+sudo pacman-key --init && sudo pacman-key --populate archlinux
+```
+
+Fix that, then re-run `seal` on the host and the command in the guest.
+
+**Why SSH comes first.** Everything after remote access is optional and
+recoverable over SSH, so the seal script installs and starts sshd before doing
+anything else. A guest that is half-sealed but reachable is a much better place
+to be than one that is nearly ready and locked.
 
 ---
 
