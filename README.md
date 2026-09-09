@@ -210,6 +210,11 @@ lists exactly when.
 | `agent-sandbox-net` | 192.168.100.0/24 | 192.168.100.10 | Normal operation. Isolated, no DNS. |
 | `agent-build-net` | 192.168.101.0/24 | 192.168.101.10 | Installs and base refreshes only. NAT. |
 
+| Guest display | Value |
+|---|---|
+| Resolution before the display agent starts | `VIDEO_WIDTH` x `VIDEO_HEIGHT` in `config/omavm.conf`, default 1920x1080 |
+| Resolution once sealed | Follows the viewer window, via `spice-vdagent` |
+
 | Host port on 192.168.100.1 | Service |
 |---|---|
 | 8888 | Allowlisting forward proxy |

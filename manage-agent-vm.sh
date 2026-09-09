@@ -143,12 +143,14 @@ CDROM
     awk -v vm="$VM_NAME" -v uuid="$uuid" -v mem="$mem_kib" -v vcpus="$VM_VCPUS" \
         -v code="$OVMF_CODE" -v nvram="$NVRAM_FILE" -v vars="$OVMF_VARS_TEMPLATE" \
         -v disk="$disk" -v net="$network" -v mac="$GUEST_MAC" -v node="$RENDER_NODE" \
-        -v accel="${ACCEL3D:-yes}" -v gl="${GL_ENABLE:-yes}" -v cdrom="$cdrom" '
+        -v accel="${ACCEL3D:-yes}" -v gl="${GL_ENABLE:-yes}" -v cdrom="$cdrom" \
+        -v vw="$VIDEO_WIDTH" -v vh="$VIDEO_HEIGHT" '
         { gsub(/@VM_NAME@/, vm); gsub(/@VM_MEM_KIB@/, mem); gsub(/@VM_VCPUS@/, vcpus);
           gsub(/@OVMF_CODE@/, code); gsub(/@NVRAM_FILE@/, nvram);
           gsub(/@OVMF_VARS_TEMPLATE@/, vars); gsub(/@DISK_IMAGE@/, disk);
           gsub(/@NETWORK@/, net); gsub(/@GUEST_MAC@/, mac); gsub(/@RENDER_NODE@/, node);
           gsub(/@ACCEL3D@/, accel); gsub(/@GL_ENABLE@/, gl);
+          gsub(/@VIDEO_WIDTH@/, vw); gsub(/@VIDEO_HEIGHT@/, vh);
           if ($0 ~ /@UUID_LINE@/) {
               if (uuid == "") next
               sub(/@UUID_LINE@/, "<uuid>" uuid "</uuid>")

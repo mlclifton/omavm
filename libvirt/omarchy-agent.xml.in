@@ -108,6 +108,7 @@
     <video>
       <model type='virtio' heads='1' primary='yes'>
         <acceleration accel3d='@ACCEL3D@'/>
+        <resolution x='@VIDEO_WIDTH@' y='@VIDEO_HEIGHT@'/>
       </model>
     </video>
 

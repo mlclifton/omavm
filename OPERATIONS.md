@@ -16,6 +16,7 @@ to type. If a task is not in here and you find yourself doing it twice, add it.
 | An API key is compromised or expiring | [Rotate a credential](#rotate-an-api-key) | Per your policy |
 | The guest SSH fingerprint changed | [Investigate a fingerprint change](#the-guest-ssh-host-key-changed) | Should be never |
 | Guest boots to a black screen after a host update | [Fall back to software rendering](#the-guest-boots-to-a-black-screen) | Rare |
+| Guest resolution is wrong or will not follow the window | [Fix the guest resolution](#the-guest-resolution-is-wrong) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
 | A file you passed to the VM gives "Permission denied" | [Stage it where qemu can read it](#permission-denied-on-a-file-you-passed-to-the-vm) | Whenever it happens |
 | `/var/lib` is filling up | [Reclaim overlay space](#disk-is-filling-up) | As needed |
@@ -401,6 +402,62 @@ not forget you changed it.
 sudo journalctl -u libvirtd -n 50
 sudo cat /var/log/libvirt/qemu/omarchy-agent.log | tail -40
 ```
+
+---
+
+## The guest resolution is wrong
+
+**Trigger.** The guest desktop is smaller than you expect, typically 1280x800,
+or resizing the viewer window does not change the guest resolution.
+
+**Why it happens.** There are two mechanisms and they apply at different times.
+
+Before the display agent is running, the resolution comes from the EDID the
+virtual GPU presents. That covers the UEFI console, the installer, and every
+boot up to the point the guest session starts. Without an explicit setting the
+virtio-gpu default is 1280x800.
+
+Once the guest is sealed, `spice-vdagent` is installed and running, and it
+resizes the guest to match the viewer window.
+
+**Steps, for the fixed resolution.** Change the values in
+`config/omavm.conf`:
+
+```bash
+VIDEO_WIDTH="1920"
+VIDEO_HEIGHT="1080"
+```
+
+The domain is re-rendered on every boot, so this applies at the next start. It
+does **not** affect a running guest:
+
+```bash
+./manage-agent-vm.sh stop
+./manage-agent-vm.sh start --gui
+```
+
+**Steps, for dynamic resizing.** This only works on a sealed guest, because the
+installer media does not run a display agent. Check the agent is up:
+
+```bash
+./manage-agent-vm.sh ssh -- systemctl is-active spice-vdagentd
+```
+
+Then enable automatic resizing in the viewer, under View, "Automatically resize".
+Without it `virt-viewer` scales the image instead of asking the guest to change
+resolution, which looks blurry rather than sharp.
+
+**Confirm.**
+
+```bash
+./manage-agent-vm.sh ssh -- hyprctl monitors
+```
+
+**Worth keeping in mind.** A fixed resolution is a feature for agent work, not a
+limitation. Coordinate based clicking depends on the viewport being the same
+size on every reset, and screenshots are only comparable across runs if the
+geometry does not move. Prefer changing the configured resolution over letting
+the window size decide it.
 
 ---
 
