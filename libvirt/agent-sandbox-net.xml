@@ -1,5 +1,5 @@
 <!--
-  agent-sandbox-net: the network the agent VM actually runs on.
+  agent-sandbox-net: used only when PROFILE is "sandbox".
 
   There is deliberately no <forward> element. In libvirt that means an isolated
   network: the bridge exists, the host has an address on it, and there is no
@@ -15,13 +15,13 @@
 -->
 <network xmlns:dnsmasq='http://libvirt.org/schemas/network/dnsmasq/1.0'>
   <name>agent-sandbox-net</name>
-  <bridge name='virbr-agent' stp='on' delay='0'/>
+  <bridge name='virbr-sandbox' stp='on' delay='0'/>
   <mtu size='1500'/>
   <dns enable='no'/>
-  <ip address='192.168.100.1' netmask='255.255.255.0'>
+  <ip address='192.168.101.1' netmask='255.255.255.0'>
     <dhcp>
-      <range start='192.168.100.10' end='192.168.100.10'/>
-      <host mac='52:54:00:a9:e1:10' name='omarchy-agent' ip='192.168.100.10'/>
+      <range start='192.168.101.10' end='192.168.101.10'/>
+      <host mac='52:54:00:a9:e1:10' name='omarchy-agent' ip='192.168.101.10'/>
     </dhcp>
   </ip>
 

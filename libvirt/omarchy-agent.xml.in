@@ -16,6 +16,7 @@
   @UUID_LINE@
   <memory unit='KiB'>@VM_MEM_KIB@</memory>
   <currentMemory unit='KiB'>@VM_MEM_KIB@</currentMemory>
+@MEMBACKING_BLOCK@
   <vcpu placement='static'>@VM_VCPUS@</vcpu>
 
   <os firmware='efi'>
@@ -128,6 +129,7 @@
       <target type='virtio' name='org.qemu.guest_agent.0'/>
     </channel>
 
+@SHARE_BLOCK@
     <rng model='virtio'>
       <backend model='random'>/dev/urandom</backend>
     </rng>

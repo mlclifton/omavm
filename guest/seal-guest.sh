@@ -21,9 +21,12 @@ set -euo pipefail
 
 GUEST_USER="@GUEST_USER@"
 VM_HOSTNAME="@VM_NAME@"
-HOST_IP="@HOST_IP@"
+SANDBOX_HOST_IP="@SANDBOX_HOST_IP@"
+SANDBOX_PREFIX="@SANDBOX_SUBNET_PREFIX@"
 PROXY_PORT="@PROXY_PORT@"
 GATEWAY_PORT="@GATEWAY_PORT@"
+SHARE_TAG="@SHARE_TAG@"
+SHARE_MOUNT="@SHARE_MOUNT@"
 PUBKEY="@PUBKEY@"
 
 if [[ $EUID -ne 0 ]]; then
@@ -42,9 +45,16 @@ step() { printf '\n\033[1;34m==>\033[0m %s\n' "$1"; }
 
 # --------------------------------------------------------------------------
 step "Installing guest support packages"
-# Requires the build network. On the sandbox network this step cannot work,
-# which is why sealing happens before the guest is moved to the sandbox.
-pacman -Sy --needed --noconfirm openssh qemu-guest-agent spice-vdagent
+# Needs working internet, which is why sealing runs under the workstation
+# profile even if you intend to use the guest in the sandbox profile later.
+#
+# The second group is the agent control kit. An agent driving this desktop
+# reads it with grim and hyprctl and acts on it with ydotool and wtype, all
+# over SSH, so it never needs a viewer attached and never touches your host
+# cursor.
+pacman -Sy --needed --noconfirm \
+    openssh qemu-guest-agent spice-vdagent \
+    grim slurp wl-clipboard wtype ydotool jq
 
 # --------------------------------------------------------------------------
 step "Configuring SSH for key-only access"
@@ -75,6 +85,46 @@ systemctl enable qemu-guest-agent
 systemctl enable spice-vdagentd
 
 # --------------------------------------------------------------------------
+step "Enabling synthetic input for the agent"
+# ydotool injects through /dev/uinput, which is independent of SPICE. That is
+# what keeps agent input from fighting the host pointer: events originate
+# inside the guest rather than arriving from the viewer.
+echo uinput > /etc/modules-load.d/omavm-uinput.conf
+modprobe uinput 2>/dev/null || true
+cat > /etc/udev/rules.d/60-omavm-uinput.rules <<'UDEV'
+KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
+UDEV
+usermod -aG input "$GUEST_USER"
+
+# Run the daemon in the user session so its socket belongs to the agent user.
+# The packaged system unit puts a root-owned socket in /tmp, which the agent
+# then cannot use without sudo on every single call.
+cat > /etc/systemd/user/ydotoold.service <<'YDOTOOL'
+[Unit]
+Description=ydotool daemon (user session)
+
+[Service]
+ExecStart=/usr/bin/ydotoold --socket-path=%t/ydotoold.socket --socket-perm=0600
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+YDOTOOL
+systemctl --global enable ydotoold.service
+
+# --------------------------------------------------------------------------
+step "Configuring the host file share"
+# nofail matters: the share is optional and absent in the sandbox profile, so
+# without it the guest would drop to an emergency shell whenever it is not
+# attached.
+install -d -m 0755 "$SHARE_MOUNT"
+if ! grep -q "^${SHARE_TAG}[[:space:]]" /etc/fstab; then
+    printf '%s %s virtiofs defaults,nofail,x-systemd.device-timeout=5s 0 0\n' \
+        "$SHARE_TAG" "$SHARE_MOUNT" >> /etc/fstab
+fi
+
+# --------------------------------------------------------------------------
 step "Pinning the DHCP client identifier to the interface MAC"
 # Without this the client id is derived from other state and dnsmasq may not
 # match the reservation, so the guest silently lands on a different address.
@@ -85,25 +135,32 @@ ipv4.dhcp-client-id=mac
 NMCONF
 
 # --------------------------------------------------------------------------
-step "Pointing the guest at the host proxy"
-# The proxy variables are set only when the guest is actually on the sandbox
-# network. On the build network the guest has real NAT, and exporting a proxy
-# address that does not exist there would break pacman during a base refresh.
+step "Writing the guest environment"
+# The proxy variables apply only in the sandbox profile, detected by the guest
+# address. Under the workstation profile the guest has ordinary NAT internet
+# and exporting a proxy that is not there would break everything.
+# Dots are regex metacharacters; an unescaped prefix would match addresses it
+# should not, such as 192x168x101.
+SANDBOX_PREFIX_RE="${SANDBOX_PREFIX//./\\.}"
 cat > /etc/profile.d/omavm-proxy.sh <<PROFILE
 # Managed by omavm seal-guest.sh. Do not edit in the guest; edit the seal
 # script on the host and re-seal, otherwise your change is lost at next reset.
-if ip -4 -brief addr show 2>/dev/null | grep -q ' 192\\.168\\.100\\.'; then
-    export http_proxy="http://${HOST_IP}:${PROXY_PORT}"
-    export https_proxy="http://${HOST_IP}:${PROXY_PORT}"
+# ydotool talks to the daemon in this user's session.
+export YDOTOOL_SOCKET="\${XDG_RUNTIME_DIR:-/run/user/\$(id -u)}/ydotoold.socket"
+
+# Sandbox profile only. Under the workstation profile the guest has ordinary
+# NAT internet and none of this applies.
+if ip -4 -brief addr show 2>/dev/null | grep -q " ${SANDBOX_PREFIX_RE}\\."; then
+    export http_proxy="http://${SANDBOX_HOST_IP}:${PROXY_PORT}"
+    export https_proxy="\$http_proxy"
     export HTTP_PROXY="\$http_proxy"
-    export HTTPS_PROXY="\$https_proxy"
-    export no_proxy="localhost,127.0.0.1,${HOST_IP}"
+    export HTTPS_PROXY="\$http_proxy"
+    export no_proxy="localhost,127.0.0.1,${SANDBOX_HOST_IP}"
     export NO_PROXY="\$no_proxy"
 
-    # LLM clients talk to the host gateway over plain HTTP. The API key is
-    # attached on the host, so it is never present inside this guest.
-    export ANTHROPIC_BASE_URL="http://${HOST_IP}:${GATEWAY_PORT}/anthropic"
-    export ANTHROPIC_API_KEY="not-a-real-key-the-host-gateway-supplies-it"
+    # Requests go to the host gateway over plain HTTP and the key is attached
+    # there, so it never exists inside this guest.
+    export ANTHROPIC_BASE_URL="http://${SANDBOX_HOST_IP}:${GATEWAY_PORT}/anthropic"
 fi
 PROFILE
 chmod 0644 /etc/profile.d/omavm-proxy.sh
@@ -143,3 +200,11 @@ date -u +'%Y-%m-%dT%H:%M:%SZ' > /etc/omavm-sealed
 
 echo
 echo "Guest sealed. Shut it down now, then run: ./manage-agent-vm.sh freeze"
+echo
+echo "The agent drives this desktop from the host over SSH, with no viewer"
+echo "attached, so it never competes with your own cursor:"
+echo "  grim -                          capture the screen to stdout"
+echo "  hyprctl -j clients              window geometry as JSON"
+echo "  ydotool mousemove -a X Y        absolute pointer move"
+echo "  ydotool click 0xC0              left click"
+echo "  wtype 'text'                    type text"

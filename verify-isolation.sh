@@ -22,6 +22,22 @@ VIRSH="virsh --connect qemu:///system"
 HOST_ONLY=0
 [[ "${1:-}" == "--host-only" ]] && HOST_ONLY=1
 
+# This script asserts containment, which only the sandbox profile claims to
+# provide. Under the workstation profile the guest is meant to have internet,
+# so running these checks there would report failures that are the intended
+# behaviour.
+if [[ "$PROFILE" != "sandbox" ]]; then
+    echo "omavm: profile is '$PROFILE', which does not claim network isolation."
+    echo
+    echo "The workstation profile gives the guest a normal NAT network with real"
+    echo "internet, clipboard sharing and optional file sharing, on purpose."
+    echo "There is nothing here for this script to verify."
+    echo
+    echo "To check the locked-down profile instead:"
+    echo "    OMAVM_PROFILE=sandbox $0"
+    exit 0
+fi
+
 # Several checks read root-owned files. Prompt once here rather than repeatedly
 # part way through the run.
 sudo -v || { echo "This check needs sudo to read the ruleset and the proxy log." >&2; exit 2; }
@@ -59,22 +75,22 @@ else
          "A reachable resolver lets an agent tunnel data out in query names."
 fi
 
-build_state=$($VIRSH net-info "$BUILD_NET" 2>/dev/null | awk '/Active/{print $2}')
-if [[ "$build_state" == "yes" ]]; then
-    fail "$BUILD_NET is running" \
-         "This network has NAT to the internet. Close it: ./manage-agent-vm.sh close-build"
+ws_state=$($VIRSH net-info "$WORKSTATION_NET" 2>/dev/null | awk '/Active/{print $2}')
+if [[ "$ws_state" == "yes" ]]; then
+    fail "$WORKSTATION_NET is running" \
+         "That network has NAT to the internet. Stop it: virsh net-destroy $WORKSTATION_NET"
 else
-    pass "$BUILD_NET is stopped"
+    pass "$WORKSTATION_NET is stopped"
 fi
 
 # --------------------------------------------------------------------------
 stage "Host: packet filter"
 
-if sudo nft list ruleset 2>/dev/null | grep -E 'masquerade|snat' | grep -q "$SANDBOX_BRIDGE"; then
-    fail "A masquerade or SNAT rule references $SANDBOX_BRIDGE" \
-         "$(sudo nft list ruleset 2>/dev/null | grep -E 'masquerade|snat' | grep "$SANDBOX_BRIDGE" | head -2)"
+if sudo nft list ruleset 2>/dev/null | grep -E 'masquerade|snat' | grep -q "$VM_BRIDGE"; then
+    fail "A masquerade or SNAT rule references $VM_BRIDGE" \
+         "$(sudo nft list ruleset 2>/dev/null | grep -E 'masquerade|snat' | grep "$VM_BRIDGE" | head -2)"
 else
-    pass "No masquerade or SNAT rule for $SANDBOX_BRIDGE"
+    pass "No masquerade or SNAT rule for $VM_BRIDGE"
 fi
 
 if command -v ufw &>/dev/null && sudo ufw status 2>/dev/null | head -1 | grep -q active; then

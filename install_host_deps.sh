@@ -20,6 +20,11 @@ DRY_RUN=0
 ASSUME_YES=0
 FAILURES=0
 
+# Bridges this toolkit created in earlier versions. They are recognised so a
+# leftover network reads as stale state to clean up rather than as a collision
+# with something else on the machine.
+RETIRED_BRIDGES=(virbr-build)
+
 PACKAGES=(
     libvirt          # the management layer everything else is defined against
     qemu-desktop     # x86_64 system emulation plus the desktop UI and display bits
@@ -110,8 +115,8 @@ preflight() {
         warn "Only ${avail_gb}G free under /var/lib. A base image plus an overlay wants roughly 120G."
     fi
 
+    check_subnet_free "$WORKSTATION_SUBNET" "workstation"
     check_subnet_free "$SANDBOX_SUBNET" "sandbox"
-    check_subnet_free "192.168.101.0/24" "build"
 
     if systemctl is-active --quiet incus 2>/dev/null; then
         warn "incus is running and manages its own bridges and nftables tables."
@@ -120,14 +125,22 @@ preflight() {
 }
 
 check_subnet_free() {
-    local subnet="$1" label="$2" prefix
+    local subnet="$1" label="$2" prefix owner
     prefix="${subnet%.0/24}"
-    if ip -4 route show | grep -q "^${prefix}\."; then
-        fail "The ${label} subnet ${subnet} collides with an existing route:"
+    # Field 3 of an "ip route" line is the interface. A route on one of our own
+    # bridges is this toolkit's own network, not a collision with something else.
+    owner=$(ip -4 route show | awk -v p="^${prefix}[.]" '$1 ~ p {print $3; exit}')
+    if [[ -z "$owner" ]]; then
+        ok "${label} subnet ${subnet} is free"
+    elif [[ "$owner" == "$WORKSTATION_BRIDGE" || "$owner" == "$SANDBOX_BRIDGE" ]]; then
+        ok "${label} subnet ${subnet} is in use by our own bridge ${owner}"
+    elif [[ " ${RETIRED_BRIDGES[*]} " == *" ${owner} "* ]]; then
+        warn "${label} subnet ${subnet} is held by ${owner}, from an earlier version"
+        info "The networks step below will offer to remove it."
+    else
+        fail "The ${label} subnet ${subnet} collides with a route on ${owner}:"
         ip -4 route show | grep "^${prefix}\." | sed 's/^/      /'
         info "Change the addresses in config/omavm.conf and the libvirt/*.xml files."
-    else
-        ok "${label} subnet ${subnet} is free"
     fi
 }
 
@@ -280,8 +293,15 @@ install_proxy() {
         warn "Put your API key in /etc/omavm/credentials.env before using a gateway route."
     fi
 
-    run sudo install -m 0644 "${REPO_DIR}/proxy/omavm-agent-proxy.service" \
-        /etc/systemd/system/omavm-agent-proxy.service
+    # The unit binds to the sandbox bridge address, which comes from the config
+    # file, so the shipped unit is a template rather than a fixed file.
+    if (( DRY_RUN )); then
+        info "[dry-run] would install omavm-agent-proxy.service bound to ${SANDBOX_HOST_IP}"
+    else
+        sed "s|192\\.168\\.100\\.1|${SANDBOX_HOST_IP}|g" \
+            "${REPO_DIR}/proxy/omavm-agent-proxy.service" \
+            | sudo tee /etc/systemd/system/omavm-agent-proxy.service >/dev/null
+    fi
     run sudo systemctl daemon-reload
     did "Service unit installed. It is started by manage-agent-vm.sh once the bridge is up."
 }
@@ -292,8 +312,13 @@ install_proxy() {
 define_networks() {
     stage "Defining libvirt networks"
 
-    define_one_network "$SANDBOX_NET" "${REPO_DIR}/libvirt/agent-sandbox-net.xml" autostart
-    define_one_network "$BUILD_NET"   "${REPO_DIR}/libvirt/agent-build-net.xml"   no-autostart
+    # Both are defined so switching profile is a config change rather than a
+    # provisioning step. Only the one the active profile names is autostarted.
+    local ws_mode="no-autostart" sb_mode="no-autostart"
+    if [[ "$PROFILE" == "sandbox" ]]; then sb_mode="autostart"; else ws_mode="autostart"; fi
+    define_one_network "$WORKSTATION_NET" "${REPO_DIR}/libvirt/agent-net.xml" "$ws_mode"
+    define_one_network "$SANDBOX_NET" "${REPO_DIR}/libvirt/agent-sandbox-net.xml" "$sb_mode"
+    retire_network "agent-build-net"
 
     if (( DRY_RUN )); then return; fi
     if sudo virsh net-info "$SANDBOX_NET" &>/dev/null; then
@@ -312,7 +337,31 @@ define_one_network() {
         return
     fi
     if sudo virsh net-info "$name" &>/dev/null; then
-        ok "Network '$name' already defined"
+        # A network defined from an older version of this repository keeps its
+        # old bridge and address until something replaces it, which then looks
+        # like an address collision rather than stale state.
+        local want_bridge have_bridge want_ip have_ip
+        want_bridge=$(grep -oP "(?<=<bridge name=')[^']+" "$xml" | head -1)
+        want_ip=$(grep -oP "(?<=<ip address=')[^']+" "$xml" | head -1)
+        have_bridge=$(sudo virsh net-dumpxml "$name" | grep -oP "(?<=<bridge name=')[^']+" | head -1)
+        have_ip=$(sudo virsh net-dumpxml "$name" | grep -oP "(?<=<ip address=')[^']+" | head -1)
+        if [[ "$want_bridge" == "$have_bridge" && "$want_ip" == "$have_ip" ]]; then
+            ok "Network '$name' already defined"
+        else
+            warn "Network '$name' does not match this repository:"
+            info "  defined here: bridge ${have_bridge}, address ${have_ip}"
+            info "  wanted:       bridge ${want_bridge}, address ${want_ip}"
+            info "Replacing it stops the network, which disconnects a running guest."
+            if confirm; then
+                sudo virsh net-destroy "$name" &>/dev/null || true
+                sudo virsh net-undefine "$name" >/dev/null
+                sudo virsh net-define "$xml" >/dev/null
+                did "Redefined '$name'"
+            else
+                warn "Left '$name' as it is. Networking will not match the config."
+                return
+            fi
+        fi
     else
         run sudo virsh net-define "$xml"
         did "Defined '$name'"
@@ -325,6 +374,20 @@ define_one_network() {
         # until a build or a base refresh explicitly starts it.
         run sudo virsh net-autostart --disable "$name" >/dev/null 2>&1 || true
     fi
+}
+
+# Networks this toolkit used to create and no longer does. Left behind they
+# hold a bridge name and a subnet that the current networks may want.
+retire_network() {
+    local name="$1"
+    (( DRY_RUN )) && return
+    sudo virsh net-info "$name" &>/dev/null || return
+    warn "'$name' is left over from an earlier version of this toolkit."
+    info "It is no longer used and holds an address range the current networks need."
+    confirm || { warn "Left '$name' defined"; return; }
+    sudo virsh net-destroy "$name" &>/dev/null || true
+    sudo virsh net-undefine "$name" >/dev/null
+    did "Removed '$name'"
 }
 
 # --------------------------------------------------------------------------
@@ -358,19 +421,32 @@ configure_firewall() {
         info "Isolation still holds, but DROP is the safer default. See OPERATIONS.md."
     fi
 
-    # The guest is permitted to reach exactly three host ports: DHCP so it can
-    # get its address, and the two proxy listeners. Everything else the host
-    # runs stays unreachable from the sandbox.
-    info "Allowing DHCP and the two proxy ports inbound on ${SANDBOX_BRIDGE} only."
     confirm || { warn "Skipped firewall rules"; return; }
+
     # DHCP DISCOVER is broadcast to 255.255.255.255, so a rule scoped to the
     # bridge address never matches it and the guest silently gets no lease.
-    # Scoping by interface is what keeps this rule narrow.
-    run sudo ufw delete allow in on "$SANDBOX_BRIDGE" to "$HOST_IP" port 67 proto udp >/dev/null 2>&1 || true
-    run sudo ufw allow in on "$SANDBOX_BRIDGE" to any port 67 proto udp comment 'omavm dhcp'
-    run sudo ufw allow in on "$SANDBOX_BRIDGE" to "$HOST_IP" port "$PROXY_PORT" proto tcp comment 'omavm proxy'
-    run sudo ufw allow in on "$SANDBOX_BRIDGE" to "$HOST_IP" port "$GATEWAY_PORT" proto tcp comment 'omavm gateway'
-    did "Sandbox bridge rules applied"
+    # Scoping by interface is what keeps the rule narrow without breaking it.
+    local br
+    for br in "$WORKSTATION_BRIDGE" "$SANDBOX_BRIDGE"; do
+        run sudo ufw delete allow in on "$br" to any port 67 proto udp >/dev/null 2>&1 || true
+        run sudo ufw allow in on "$br" to any port 67 proto udp comment 'omavm dhcp'
+    done
+    did "DHCP allowed on both bridges"
+
+    if [[ "$PROFILE" == "workstation" ]]; then
+        # NAT needs forwarding off the bridge, which ufw's default DROP blocks.
+        # Scoped to this bridge and this uplink, so nothing else is opened up.
+        local wan
+        wan=$(ip -4 route show default | awk '{print $5; exit}')
+        run sudo ufw route allow in on "$WORKSTATION_BRIDGE" out on "$wan" comment 'omavm nat'
+        run sudo ufw allow in on "$WORKSTATION_BRIDGE" to "$WORKSTATION_HOST_IP" port 53 comment 'omavm dns'
+        did "Workstation bridge allowed to reach the internet via ${wan}"
+    else
+        # The sandbox reaches exactly two host ports and nothing else.
+        run sudo ufw allow in on "$SANDBOX_BRIDGE" to "$SANDBOX_HOST_IP" port "$PROXY_PORT" proto tcp comment 'omavm proxy'
+        run sudo ufw allow in on "$SANDBOX_BRIDGE" to "$SANDBOX_HOST_IP" port "$GATEWAY_PORT" proto tcp comment 'omavm gateway'
+        did "Sandbox bridge rules applied"
+    fi
 }
 
 # --------------------------------------------------------------------------
@@ -386,6 +462,7 @@ summary() {
     fi
     ok "Host is provisioned."
     echo
+    info "Profile: ${PROFILE}"
     info "Next steps:"
     info "  1. Log out and back in if your groups changed."
     info "  2. Download the Omarchy ISO and set OMARCHY_ISO in config/omavm.conf."

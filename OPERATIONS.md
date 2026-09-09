@@ -3,20 +3,28 @@
 Every task in this system that needs a human, what makes it necessary, and what
 to type. If a task is not in here and you find yourself doing it twice, add it.
 
+Entries marked **sandbox only** apply to the `sandbox` profile. Under the
+default `workstation` profile the guest has ordinary internet and there is no
+proxy, no allowlist and no isolation to maintain, so most of the recurring work
+below simply does not arise.
+
 ## At a glance
 
 | Trigger | Task | Roughly how often |
 |---|---|---|
-| An agent run fails with a proxy denial | [Allowlist a host](#an-agent-is-blocked-by-the-proxy) | Whenever it happens |
-| You want an agent to use a new API without holding its key | [Add a gateway route](#add-a-gateway-route-for-a-new-api) | Rare |
+| An agent run fails with a proxy denial | [Allowlist a host](#an-agent-is-blocked-by-the-proxy) | Sandbox only |
+| You want an agent to use a new API without holding its key | [Add a gateway route](#add-a-gateway-route-for-a-new-api) | Sandbox only |
 | Base image is more than a month old, or lacks a package you need | [Refresh the base](#the-base-image-is-stale) | Monthly |
 | `pacman -Syu` touched mesa, the kernel, libvirt, qemu or ufw | [Re-verify isolation](#after-a-host-system-update) | Every host update |
-| `verify-isolation.sh` exits non-zero | [Triage a failed verification](#isolation-verification-failed) | On failure |
+| `verify-isolation.sh` exits non-zero | [Triage a failed verification](#isolation-verification-failed) | Sandbox only |
 | You reloaded, reset or reinstalled ufw | [Reapply the bridge rules](#ufw-was-reloaded-or-reset) | On change |
-| An API key is compromised or expiring | [Rotate a credential](#rotate-an-api-key) | Per your policy |
+| An API key is compromised or expiring | [Rotate a credential](#rotate-an-api-key) | Sandbox only |
 | The guest SSH fingerprint changed | [Investigate a fingerprint change](#the-guest-ssh-host-key-changed) | Should be never |
 | Guest boots to a black screen after a host update | [Fall back to software rendering](#the-guest-boots-to-a-black-screen) | Rare |
 | Guest resolution is wrong or will not follow the window | [Fix the guest resolution](#the-guest-resolution-is-wrong) | Rare |
+| The agent and your cursor are fighting | [Detach the viewer](#the-agent-and-your-cursor-are-fighting) | Whenever it happens |
+| The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
+| The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
 | Guest has no IP address at all | [Diagnose a missing lease](#the-guest-never-gets-an-ip-address) | Rare |
 | A file you passed to the VM gives "Permission denied" | [Stage it where qemu can read it](#permission-denied-on-a-file-you-passed-to-the-vm) | Whenever it happens |
@@ -177,15 +185,12 @@ Back on the host:
 **Confirm.**
 
 ```bash
-./verify-isolation.sh
+./manage-agent-vm.sh status
 ```
-
-The build network must be stopped again. `freeze` closes it, but verifying is
-how you know.
 
 **Note.** The old base is not deleted until `freeze` succeeds, so a refresh that
 goes wrong costs you nothing. If you abandon a refresh halfway, run
-`./manage-agent-vm.sh close-build` and then `./manage-agent-vm.sh reset`.
+`./manage-agent-vm.sh reset` to go back to the frozen base.
 
 ---
 
@@ -236,10 +241,11 @@ sudo virsh net-autostart agent-sandbox-net
 sudo virsh net-start agent-sandbox-net
 ```
 
-**`agent-build-net is running`.** A build or refresh was left open:
+**`agent-net is running`.** The NAT network is up while you are asking for
+containment. Stop it:
 
 ```bash
-./manage-agent-vm.sh close-build
+sudo virsh net-destroy agent-net
 ```
 
 **`A masquerade or SNAT rule references virbr-agent`.** Something is NATting the
@@ -403,6 +409,111 @@ not forget you changed it.
 sudo journalctl -u libvirtd -n 50
 sudo cat /var/log/libvirt/qemu/omarchy-agent.log | tail -40
 ```
+
+---
+
+## The agent and your cursor are fighting
+
+**Trigger.** The pointer in the guest jumps away from where the agent put it, or
+the agent's clicks land in the wrong place while you are using your machine.
+
+**Why it happens.** SPICE with an absolute pointing device forwards your host
+pointer position into the guest whenever your pointer is over a focused viewer
+window. The guest cursor then snaps to wherever your hand is. This is the only
+path by which the two machines share input.
+
+**Steps.** Close the viewer. The agent keeps working, because it drives the
+guest over SSH and does not need one:
+
+```bash
+./manage-agent-vm.sh watch
+```
+
+That pulls frames from the guest over SSH so you can see what is happening
+without your pointer ever entering it.
+
+**If you need a viewer open anyway**, minimise it or move it to a workspace you
+are not using. An unfocused window with your pointer elsewhere does not forward
+motion.
+
+**Confirm.** Ask the compositor in the guest where its cursor is, rather than
+trusting what you see:
+
+```bash
+./manage-agent-vm.sh ssh -- hyprctl cursorpos
+```
+
+---
+
+## The agent cannot click or type
+
+**Trigger.** `ydotool` reports it cannot connect to its socket, or commands run
+without error but nothing moves in the guest.
+
+**Why it happens.** `ydotool` needs a daemon holding `/dev/uinput`, and the
+client finds it through `YDOTOOL_SOCKET`. Both are set up during sealing. A
+guest built before that, or one where the agent user was changed afterwards,
+will not have them.
+
+**Steps.** Check the daemon is running in the user session, not as root:
+
+```bash
+./manage-agent-vm.sh ssh -- systemctl --user status ydotoold
+./manage-agent-vm.sh ssh -- 'echo $YDOTOOL_SOCKET'
+```
+
+If the unit is missing, the base predates the control kit and needs re-sealing:
+
+```bash
+./manage-agent-vm.sh refresh
+./manage-agent-vm.sh seal
+./manage-agent-vm.sh stop && ./manage-agent-vm.sh freeze
+```
+
+If the unit is present but failing, the uinput device is usually the cause:
+
+```bash
+./manage-agent-vm.sh ssh -- 'ls -l /dev/uinput; id'
+```
+
+The agent user must be in the `input` group, and the device must be mode 0660
+owned by that group. Group membership needs a fresh login, so reboot the guest
+rather than just retrying.
+
+**Note.** A command issued over SSH picks up `YDOTOOL_SOCKET` only through the
+login shell. Run agent commands with `bash -lc` if you are invoking them in a
+way that skips profile scripts.
+
+---
+
+## The file share is not mounted
+
+**Trigger.** `/mnt/omavm` is empty in the guest, or the mount is missing.
+
+**First, is a share configured at all?** It is off by default:
+
+```bash
+./manage-agent-vm.sh status
+```
+
+If it says `disabled`, set `SHARE_DIR` in `config/omavm.conf` and restart the
+guest. The device is only added to the domain when a share is configured, so
+this needs a stop and start rather than a mount command.
+
+**If it says enabled but the guest has nothing:**
+
+```bash
+./manage-agent-vm.sh ssh -- 'mount | grep virtiofs; sudo mount -a'
+```
+
+The fstab entry uses `nofail`, deliberately, so the guest still boots when the
+share is absent. That means a failed mount is quiet rather than fatal, and you
+have to look for it.
+
+**Two things that will not work.** The share is ignored entirely in the sandbox
+profile, where a shared filesystem would bypass the network controls. And
+changing `SHARE_READONLY` requires a restart, because it is a property of the
+device rather than of the mount.
 
 ---
 

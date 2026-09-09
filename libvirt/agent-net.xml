@@ -1,0 +1,27 @@
+<!--
+  agent-net: the network for the workstation profile, which is the default.
+
+  An ordinary NAT network. The guest has real internet, working DNS, and a
+  reserved address so SSH and the agent tooling always find it in the same
+  place. This is a second development machine, not a containment boundary.
+
+  If you want containment, switch PROFILE to "sandbox" in config/omavm.conf
+  and use agent-sandbox-net instead. The two live on separate subnets so both
+  can be defined at once without colliding, though only one runs at a time.
+-->
+<network>
+  <name>agent-net</name>
+  <forward mode='nat'>
+    <nat>
+      <port start='1024' end='65535'/>
+    </nat>
+  </forward>
+  <bridge name='virbr-agent' stp='on' delay='0'/>
+  <mtu size='1500'/>
+  <ip address='192.168.100.1' netmask='255.255.255.0'>
+    <dhcp>
+      <range start='192.168.100.10' end='192.168.100.99'/>
+      <host mac='52:54:00:a9:e1:10' name='omarchy-agent' ip='192.168.100.10'/>
+    </dhcp>
+  </ip>
+</network>

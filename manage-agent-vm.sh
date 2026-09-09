@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
 #
-# manage-agent-vm.sh — lifecycle for the Omarchy agent sandbox VM.
+# manage-agent-vm.sh — lifecycle for the Omarchy agent VM.
 #
 #   init      Create the writable build disk.
-#   build     Boot the installer on the NAT build network, with a display.
+#   build     Boot the installer with a display attached.
 #   rebuild   Throw away a part-finished install and start it over.
 #   seal      Provision the installed guest for automation. Guest must be running.
 #   freeze    Turn the sealed build disk into the read-only base image.
 #   reset     Discard all guest state and return to the base. The common one.
-#   start     Boot the sandbox VM. --gui to attach a display.
+#   start     Boot the VM. --gui to attach a display.
 #   stop      Shut down. --force to pull the plug.
-#   gui       Attach a display to a running VM.
+#   gui       Attach a display to a running VM. Steals the pointer when focused.
+#   watch     Stream screenshots from the guest without touching its cursor.
+#   screenshot  Save one frame from the guest to a file.
 #   ssh       Run a command in the guest, or open a shell.
-#   refresh   Reboot the base on the build network so you can update it.
-#   status    Show what is running and which network the VM is on.
-#   logs      Follow the proxy audit log.
+#   refresh   Boot a writable copy of the base so you can update it.
+#   status    Show the profile, the domain, the share and image sizes.
+#   logs      Follow the proxy audit log (sandbox profile only).
 #
 # The domain XML is rendered from libvirt/omarchy-agent.xml.in and redefined on
 # every boot, so this repository is the source of truth. Changes made through
 # virt-manager are discarded rather than quietly persisting.
+#
+# PROFILE in config/omavm.conf decides the network, the clipboard and whether
+# file sharing is possible. Override it for one command with, for example:
+#   OMAVM_PROFILE=sandbox ./manage-agent-vm.sh start
 
 set -euo pipefail
 
@@ -121,8 +127,36 @@ render_domain() {
     # has no place on the sandbox network. During a build there is no agent yet
     # and you need to paste commands into the guest, so leaving it off there
     # just makes the install painful for no security gain.
-    local clipboard="no"
-    [[ "$network" == "$BUILD_NET" ]] && clipboard="yes"
+    # Clipboard and file sharing are host-to-guest channels. In the sandbox
+    # profile they would bypass the network controls entirely, so they are off
+    # there and on everywhere else.
+    local clipboard="yes"
+    [[ "$PROFILE" == "sandbox" ]] && clipboard="no"
+
+    # virtiofs needs the guest memory to be shareable with the virtiofsd
+    # process, so the share and the memory backing are one decision, not two.
+    local membacking="" share=""
+    if [[ "$PROFILE" != "sandbox" && -n "$SHARE_DIR" ]]; then
+        [[ -d "$SHARE_DIR" ]] || die "SHARE_DIR is set to '$SHARE_DIR', which does not exist."
+        local readonly_tag=""
+        [[ "$SHARE_READONLY" == "yes" ]] && readonly_tag=$'\n      <readonly/>'
+        membacking=$(cat <<MEMBACK
+  <memoryBacking>
+    <source type='memfd'/>
+    <access mode='shared'/>
+  </memoryBacking>
+MEMBACK
+        )
+        share=$(cat <<SHARECFG
+
+    <filesystem type='mount' accessmode='passthrough'>
+      <driver type='virtiofs'/>
+      <source dir='${SHARE_DIR}'/>
+      <target dir='${SHARE_TAG}'/>${readonly_tag}
+    </filesystem>
+SHARECFG
+        )
+    fi
 
     if [[ -n "$iso" ]]; then
         cdrom=$(cat <<CDROM
@@ -153,7 +187,8 @@ CDROM
         -v code="$OVMF_CODE" -v nvram="$NVRAM_FILE" -v vars="$OVMF_VARS_TEMPLATE" \
         -v disk="$disk" -v net="$network" -v mac="$GUEST_MAC" -v node="$RENDER_NODE" \
         -v accel="${ACCEL3D:-yes}" -v gl="${GL_ENABLE:-yes}" -v cdrom="$cdrom" \
-        -v vw="$VIDEO_WIDTH" -v vh="$VIDEO_HEIGHT" -v clip="$clipboard" '
+        -v vw="$VIDEO_WIDTH" -v vh="$VIDEO_HEIGHT" -v clip="$clipboard" \
+        -v membacking="$membacking" -v share="$share" '
         { gsub(/@VM_NAME@/, vm); gsub(/@VM_MEM_KIB@/, mem); gsub(/@VM_VCPUS@/, vcpus);
           gsub(/@OVMF_CODE@/, code); gsub(/@NVRAM_FILE@/, nvram);
           gsub(/@OVMF_VARS_TEMPLATE@/, vars); gsub(/@DISK_IMAGE@/, disk);
@@ -166,6 +201,14 @@ CDROM
               sub(/@UUID_LINE@/, "<uuid>" uuid "</uuid>")
           }
           if ($0 ~ /@CDROM_BLOCK@/) { sub(/@CDROM_BLOCK@/, cdrom) }
+          if ($0 ~ /@MEMBACKING_BLOCK@/) {
+              if (membacking == "") next
+              sub(/@MEMBACKING_BLOCK@/, membacking)
+          }
+          if ($0 ~ /@SHARE_BLOCK@/) {
+              if (share == "") next
+              sub(/@SHARE_BLOCK@/, share)
+          }
           print }
     ' "$TEMPLATE" > "$rendered"
     echo "$rendered"
@@ -182,11 +225,10 @@ define_domain() {
     rm -f "$xml"
 }
 
-guest_ip_for_network() {
-    case "$(current_network)" in
-        "$BUILD_NET") echo "$BUILD_GUEST_IP" ;;
-        *)            echo "$GUEST_IP" ;;
-    esac
+# Run a command in the guest and stream its stdout back. Kept separate from
+# cmd_ssh, which execs and therefore cannot be called from another function.
+guest_exec() {
+    ssh -i "$SSH_KEY" $SSH_OPTS -o BatchMode=yes "${GUEST_USER}@${GUEST_IP}" "$@"
 }
 
 wait_for_ssh() {
@@ -207,42 +249,15 @@ wait_for_ssh() {
 }
 
 start_proxy() {
+    # The proxy exists to give an isolated guest a controlled way out. With a
+    # NAT network there is nothing for it to do, so it stays stopped.
+    [[ "$PROFILE" == "sandbox" ]] || return 0
     if ! systemctl is-active --quiet omavm-agent-proxy; then
         sudo systemctl start omavm-agent-proxy \
             || warn "Proxy failed to start. Check: journalctl -u omavm-agent-proxy -n 30"
     fi
     systemctl is-active --quiet omavm-agent-proxy \
         && ok "Egress proxy running on ${HOST_IP}:${PROXY_PORT} and :${GATEWAY_PORT}"
-}
-
-# The build network is a real hole in the sandbox. It is opened explicitly and
-# always closed again, and verify-isolation.sh fails if it is left open.
-open_build_network() {
-    local wan
-    wan=$(wan_interface)
-    $VIRSH net-start "$BUILD_NET" &>/dev/null || true
-    if command -v ufw &>/dev/null && sudo ufw status | head -1 | grep -q active; then
-        # Broadcast destination, so this rule cannot be scoped to the bridge
-        # address. See the same note in install_host_deps.sh.
-        sudo ufw delete allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 67 proto udp >/dev/null 2>&1 || true
-        sudo ufw allow in on "$BUILD_BRIDGE" to any port 67 proto udp comment 'omavm build dhcp' >/dev/null
-        sudo ufw allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 53 comment 'omavm build dns' >/dev/null
-        sudo ufw route allow in on "$BUILD_BRIDGE" out on "$wan" comment 'omavm build nat' >/dev/null
-        ok "Opened the build network for NAT out of ${wan}"
-    fi
-    warn "The guest now has unrestricted internet. Close it with: $0 close-build"
-}
-
-close_build_network() {
-    local wan
-    wan=$(wan_interface)
-    if command -v ufw &>/dev/null && sudo ufw status | head -1 | grep -q active; then
-        sudo ufw delete allow in on "$BUILD_BRIDGE" to any port 67 proto udp >/dev/null 2>&1 || true
-        sudo ufw delete allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port 53 >/dev/null 2>&1 || true
-        sudo ufw route delete allow in on "$BUILD_BRIDGE" out on "$wan" >/dev/null 2>&1 || true
-    fi
-    $VIRSH net-destroy "$BUILD_NET" &>/dev/null || true
-    ok "Build network closed and stopped"
 }
 
 # --------------------------------------------------------------------------
@@ -284,9 +299,9 @@ cmd_build() {
 
     stage "Booting the installer on the build network"
     domain_running && $VIRSH destroy "$VM_NAME" >/dev/null
-    open_build_network
+    $VIRSH net-start "$VM_NET" &>/dev/null || true
     sudo rm -f "$NVRAM_FILE"
-    define_domain "$WORK_IMAGE" "$BUILD_NET" "$STAGED_ISO"
+    define_domain "$WORK_IMAGE" "$VM_NET" "$STAGED_ISO"
     $VIRSH start "$VM_NAME" >/dev/null
     ok "Guest started with the installer attached"
     echo
@@ -302,8 +317,9 @@ cmd_build() {
 
 cmd_seal() {
     domain_running || die "The guest is not running. Run '$0 build' and finish the install first."
-    [[ "$(current_network)" == "$BUILD_NET" ]] \
-        || die "The guest is on the sandbox network. Sealing needs internet, so it must be on $BUILD_NET."
+    [[ "$PROFILE" != "sandbox" ]] \
+        || die "Sealing needs internet to install the guest tooling.
+    Run it with the workstation profile: OMAVM_PROFILE=workstation $0 seal"
     [[ -f "${SSH_KEY}.pub" ]] || die "Missing ${SSH_KEY}.pub. Run install_host_deps.sh first."
 
     stage "Serving the seal script to the guest"
@@ -314,30 +330,33 @@ cmd_seal() {
 
     sed -e "s|@GUEST_USER@|${GUEST_USER}|g" \
         -e "s|@VM_NAME@|${VM_NAME}|g" \
-        -e "s|@HOST_IP@|${HOST_IP}|g" \
+        -e "s|@SANDBOX_HOST_IP@|${SANDBOX_HOST_IP}|g" \
+        -e "s|@SANDBOX_SUBNET_PREFIX@|${SANDBOX_HOST_IP%.*}|g" \
         -e "s|@PROXY_PORT@|${PROXY_PORT}|g" \
         -e "s|@GATEWAY_PORT@|${GATEWAY_PORT}|g" \
+        -e "s|@SHARE_TAG@|${SHARE_TAG}|g" \
+        -e "s|@SHARE_MOUNT@|${SHARE_MOUNT}|g" \
         -e "s|@PUBKEY@|${pubkey}|g" \
         "$SEAL_SRC" > "${serve_dir}/s"
 
-    python3 -m http.server "$SEAL_HTTP_PORT" --bind "$BUILD_HOST_IP" \
+    python3 -m http.server "$SEAL_HTTP_PORT" --bind "$HOST_IP" \
         --directory "$serve_dir" &>/dev/null &
     local server_pid=$!
     trap 'kill '"$server_pid"' 2>/dev/null; rm -rf "$serve_dir"' RETURN
 
     if command -v ufw &>/dev/null && sudo ufw status | head -1 | grep -q active; then
-        sudo ufw allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port "$SEAL_HTTP_PORT" \
+        sudo ufw allow in on "$VM_BRIDGE" to "$HOST_IP" port "$SEAL_HTTP_PORT" \
             proto tcp comment 'omavm seal' >/dev/null 2>&1 || true
     fi
 
     echo
     printf '  %sIn a terminal inside the guest, run this one line:%s\n\n' "$c_bold" "$c_reset"
-    printf '    curl -sL %s:%s/s | sudo bash\n\n' "$BUILD_HOST_IP" "$SEAL_HTTP_PORT"
+    printf '    curl -sL %s:%s/s | sudo bash\n\n' "$HOST_IP" "$SEAL_HTTP_PORT"
     info "Clipboard sharing is on during a build, so you can paste this."
     info "It is off on the sandbox network, where an agent could abuse it."
     info "This script waits until the guest accepts the new SSH key."
 
-    if wait_for_ssh "$BUILD_GUEST_IP" 900; then
+    if wait_for_ssh "$GUEST_IP" 900; then
         ok "Guest sealed and reachable over SSH"
         info "Next: shut the guest down, then run: $0 freeze"
     else
@@ -345,7 +364,7 @@ cmd_seal() {
     fi
 
     if command -v ufw &>/dev/null && sudo ufw status | head -1 | grep -q active; then
-        sudo ufw delete allow in on "$BUILD_BRIDGE" to "$BUILD_HOST_IP" port "$SEAL_HTTP_PORT" \
+        sudo ufw delete allow in on "$VM_BRIDGE" to "$HOST_IP" port "$SEAL_HTTP_PORT" \
             proto tcp >/dev/null 2>&1 || true
     fi
 }
@@ -371,7 +390,6 @@ cmd_freeze() {
     sudo chmod 0444 "$BASE_IMAGE"
     ok "Base image written: $(sudo du -h "$BASE_IMAGE" | cut -f1) at $BASE_IMAGE"
     warn "The base is now mode 0444. Never boot it directly; boot overlays of it."
-    close_build_network
     cmd_reset
 }
 
@@ -396,7 +414,7 @@ cmd_reset() {
     sudo install -m 0600 -o root -g root "$OVMF_VARS_TEMPLATE" "$NVRAM_FILE"
     ok "UEFI variables restored from the firmware template"
 
-    define_domain "$OVERLAY_IMAGE" "$SANDBOX_NET"
+    define_domain "$OVERLAY_IMAGE" "$VM_NET"
     ok "Domain redefined on the isolated network"
     info "Start it with: $0 start --gui"
 }
@@ -414,15 +432,15 @@ cmd_start() {
 
     [[ -f "$OVERLAY_IMAGE" ]] || die "No overlay. Run: $0 reset"
     stage "Starting the sandbox VM"
-    $VIRSH net-start "$SANDBOX_NET" &>/dev/null || true
+    $VIRSH net-start "$VM_NET" &>/dev/null || true
     start_proxy
 
     if domain_running; then
         ok "Already running"
     else
-        define_domain "$OVERLAY_IMAGE" "$SANDBOX_NET"
+        define_domain "$OVERLAY_IMAGE" "$VM_NET"
         $VIRSH start "$VM_NAME" >/dev/null
-        ok "Started on $SANDBOX_NET"
+        ok "Started on $VM_NET (profile: $PROFILE)"
     fi
     (( attach )) && cmd_gui
     info "SSH in with: $0 ssh"
@@ -464,7 +482,7 @@ cmd_ssh() {
     domain_running || die "The guest is not running. Run: $0 start"
     [[ "${1:-}" == "--" ]] && shift
     local host
-    host=$(guest_ip_for_network)
+    host="$GUEST_IP"
     exec ssh -i "$SSH_KEY" $SSH_OPTS "${GUEST_USER}@${host}" "$@"
 }
 
@@ -479,9 +497,9 @@ cmd_refresh() {
     sudo rm -f "$WORK_IMAGE"
     info "Copying the base to a writable image. This takes a moment."
     sudo qemu-img convert -O qcow2 "$BASE_IMAGE" "$WORK_IMAGE"
-    open_build_network
+    $VIRSH net-start "$VM_NET" &>/dev/null || true
     sudo install -m 0600 -o root -g root "$OVMF_VARS_TEMPLATE" "$NVRAM_FILE"
-    define_domain "$WORK_IMAGE" "$BUILD_NET"
+    define_domain "$WORK_IMAGE" "$VM_NET"
     $VIRSH start "$VM_NAME" >/dev/null
     ok "Base running on the build network with internet access"
     info "Update it: $0 ssh, then 'sudo pacman -Syu' and 'omarchy-update'."
@@ -490,29 +508,64 @@ cmd_refresh() {
 
 cmd_status() {
     stage "Status"
+    printf '  %-22s %s\n' "profile" "$PROFILE"
     printf '  %-22s %s\n' "domain" "$($VIRSH domstate "$VM_NAME" 2>/dev/null || echo 'undefined')"
     printf '  %-22s %s\n' "network" "$(current_network)"
-    printf '  %-22s %s\n' "proxy" "$(systemctl is-active omavm-agent-proxy 2>/dev/null)"
-    printf '  %-22s %s\n' "sandbox net" "$($VIRSH net-info "$SANDBOX_NET" 2>/dev/null | awk '/Active/{print $2}')"
-    printf '  %-22s %s\n' "build net" "$($VIRSH net-info "$BUILD_NET" 2>/dev/null | awk '/Active/{print $2}')"
+    printf '  %-22s %s\n' "guest address" "$GUEST_IP"
+    if [[ -n "$SHARE_DIR" && "$PROFILE" != "sandbox" ]]; then
+        printf '  %-22s %s -> %s%s\n' "file share" "$SHARE_DIR" "$SHARE_MOUNT" \
+            "$([[ "$SHARE_READONLY" == "yes" ]] && echo ' (read-only)')"
+    else
+        printf '  %-22s %s\n' "file share" "disabled"
+    fi
+    if [[ "$PROFILE" == "sandbox" ]]; then
+        printf '  %-22s %s\n' "proxy" "$(systemctl is-active omavm-agent-proxy 2>/dev/null)"
+    fi
     if [[ -f "$BASE_IMAGE" ]]; then
-        printf '  %-22s %s (%s)\n' "base image" \
+        printf '  %-22s %s (sealed %s)\n' "base image" \
             "$(sudo du -h "$BASE_IMAGE" | cut -f1)" \
-            "sealed $(sudo stat -c %y "$BASE_IMAGE" | cut -d' ' -f1)"
+            "$(sudo stat -c %y "$BASE_IMAGE" | cut -d' ' -f1)"
     else
         printf '  %-22s %s\n' "base image" "missing"
     fi
     if [[ -f "$OVERLAY_IMAGE" ]]; then
-        printf '  %-22s %s of guest writes since last reset\n' "overlay" \
+        printf '  %-22s %s written since the last reset\n' "overlay" \
             "$(sudo du -h "$OVERLAY_IMAGE" | cut -f1)"
     else
         printf '  %-22s %s\n' "overlay" "missing, run reset"
     fi
-    if [[ "$(current_network)" == "$BUILD_NET" ]]; then
-        echo
-        warn "The guest is on the BUILD network and has unrestricted internet."
-        info "This is only correct during an install or a base refresh."
-    fi
+}
+
+# Watching without interfering. Attaching a viewer means your pointer enters
+# the guest whenever it is over the window, which fights an agent that is
+# driving the cursor. Pulling frames over SSH lets you see what is happening
+# and touch nothing. Host-side capture is not an option here: qemu cannot
+# screendump a virgl guest, it reports "no surface".
+cmd_watch() {
+    domain_running || die "The guest is not running."
+    local interval="${1:-2}" out
+    out=$(mktemp -t "omavm-watch.XXXXXX.png")
+    command -v imv &>/dev/null || command -v swayimg &>/dev/null \
+        || warn "No lightweight image viewer found. Install imv to see frames update."
+    stage "Pulling frames from the guest every ${interval}s. Ctrl-C to stop."
+    info "Your pointer never enters the guest, so the agent keeps the cursor."
+    while true; do
+        if guest_exec "grim -" > "$out".new 2>/dev/null && [[ -s "$out".new ]]; then
+            mv "$out".new "$out"
+            printf '\r  %s  %s' "$(date +%H:%M:%S)" "$out"
+        else
+            printf '\r  %s  no frame (is a session running in the guest?)' "$(date +%H:%M:%S)"
+        fi
+        sleep "$interval"
+    done
+}
+
+cmd_screenshot() {
+    domain_running || die "The guest is not running."
+    local out="${1:-omavm-$(date +%Y%m%d-%H%M%S).png}"
+    guest_exec "grim -" > "$out" || die "Capture failed. Is a graphical session running in the guest?"
+    [[ -s "$out" ]] || die "Capture produced an empty file."
+    ok "Wrote $out ($(du -h "$out" | cut -f1))"
 }
 
 cmd_logs() {
@@ -528,11 +581,10 @@ main() {
     local cmd="${1:-status}"
     shift || true
     case "$cmd" in
-        init|build|rebuild|seal|freeze|reset|start|stop|gui|ssh|refresh|status|logs)
+        init|build|rebuild|seal|freeze|reset|start|stop|gui|ssh|watch|screenshot|refresh|status|logs)
             require_libvirt_access
             "cmd_${cmd}" "$@"
             ;;
-        close-build) close_build_network ;;
         -h|--help|help) usage ;;
         *) usage; exit 2 ;;
     esac
