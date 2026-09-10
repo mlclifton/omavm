@@ -12,7 +12,8 @@
 #   stop      Shut down. --force to pull the plug.
 #   reboot    Restart the guest over ACPI, no guest password needed.
 #   gui       Attach a display to a running VM. Steals the pointer when focused.
-#   watch     Stream screenshots from the guest without touching its cursor.
+#   watch     Stream frames from the guest without touching its cursor.
+#             Draws them in the terminal where that is supported.
 #   screenshot  Save one frame from the guest to a file.
 #   ssh       Run a command in the guest, or open a shell.
 #   paste     Type the host clipboard into the guest, key by key. For use
@@ -643,7 +644,6 @@ cmd_stop() {
 
 cmd_gui() {
     domain_running || die "The guest is not running."
-    apply_keyboard_layout
     command -v virt-viewer &>/dev/null || die "virt-viewer is not installed."
     stage "Attaching a display"
     # --attach is required: with GL enabled the SPICE server has no network
@@ -931,21 +931,82 @@ cmd_status() {
 # driving the cursor. Pulling frames over SSH lets you see what is happening
 # and touch nothing. Host-side capture is not an option here: qemu cannot
 # screendump a virgl guest, it reports "no surface".
+# Ask the terminal whether it can draw images. Sixel-capable terminals include
+# ";4" in their Primary Device Attributes reply. Guessing from $TERM is not
+# reliable, and drawing sixel at a terminal that cannot render it fills the
+# screen with garbage.
+terminal_supports_sixel() {
+    [[ -t 1 ]] || return 1
+    command -v img2sixel &>/dev/null || return 1
+    local reply saved
+    exec 3<>/dev/tty 2>/dev/null || return 1
+    saved=$(stty -g <&3 2>/dev/null) || { exec 3>&- 3<&-; return 1; }
+    stty raw -echo <&3 2>/dev/null
+    printf '\e[c' >&3
+    IFS= read -r -t 1 -d 'c' reply <&3 2>/dev/null
+    stty "$saved" <&3 2>/dev/null
+    exec 3>&- 3<&-
+    [[ "$reply" == *";4"* ]]
+}
+
+# One frame from the guest to stdout. Goes through omarchy-ui rather than grim
+# directly: a command arriving over SSH has none of the graphical session's
+# environment, and bare grim fails with "failed to create display".
+guest_frame() {
+    guest_exec "${OMAVM_UI:-omarchy-ui} shot -"
+}
+
 cmd_watch() {
     domain_running || die "The guest is not running."
-    apply_keyboard_layout
-    local interval="${1:-2}" out
-    out=$(mktemp -t "omavm-watch.XXXXXX.png")
-    command -v imv &>/dev/null || command -v swayimg &>/dev/null \
-        || warn "No lightweight image viewer found. Install imv to see frames update."
+
+    local interval=2 mode=auto
+    while (( $# )); do
+        case "$1" in
+            --inline)    mode=inline ;;
+            --no-inline) mode=file ;;
+            *)           interval="$1" ;;
+        esac
+        shift
+    done
+
+    local inline=0
+    case "$mode" in
+        inline) inline=1 ;;
+        auto)   terminal_supports_sixel && inline=1 ;;
+    esac
+
+    local frame
+    frame=$(mktemp -t "omavm-watch.XXXXXX.png")
+    trap 'rm -f "$frame" "${frame}.new"; printf "\n"' RETURN EXIT INT TERM
+
     stage "Pulling frames from the guest every ${interval}s. Ctrl-C to stop."
     info "Your pointer never enters the guest, so the agent keeps the cursor."
-    while true; do
-        if guest_exec "grim -" > "$out".new 2>/dev/null && [[ -s "$out".new ]]; then
-            mv "$out".new "$out"
-            printf '\r  %s  %s' "$(date +%H:%M:%S)" "$out"
+    if (( inline )); then
+        info "Drawing frames in this terminal."
+    else
+        info "Each frame is written to ${frame}"
+        if command -v img2sixel &>/dev/null; then
+            info "This terminal did not report image support. Force it with --inline."
         else
-            printf '\r  %s  no frame (is a session running in the guest?)' "$(date +%H:%M:%S)"
+            info "Install libsixel to draw frames here, or open that file in a viewer."
+        fi
+    fi
+    echo
+
+    local width="${OMAVM_WATCH_WIDTH:-900}"
+    while true; do
+        if guest_frame > "${frame}.new" 2>/dev/null && [[ -s "${frame}.new" ]]; then
+            mv "${frame}.new" "$frame"
+            if (( inline )); then
+                printf '\e[H\e[2J'
+                img2sixel -w "$width" "$frame" 2>/dev/null
+                printf '\n  %s   Ctrl-C to stop\n' "$(date +%H:%M:%S)"
+            else
+                printf '\r  %s  %s  ' "$(date +%H:%M:%S)" "$frame"
+            fi
+        else
+            printf '\r  %s  no frame. Check: %s ssh -- omarchy-ui doctor  ' \
+                "$(date +%H:%M:%S)" "$0"
         fi
         sleep "$interval"
     done
@@ -953,10 +1014,10 @@ cmd_watch() {
 
 cmd_screenshot() {
     domain_running || die "The guest is not running."
-    apply_keyboard_layout
     local out="${1:-omavm-$(date +%Y%m%d-%H%M%S).png}"
-    guest_exec "grim -" > "$out" || die "Capture failed. Is a graphical session running in the guest?"
-    [[ -s "$out" ]] || die "Capture produced an empty file."
+    guest_frame > "$out" \
+        || die "Capture failed. Check: $0 ssh -- omarchy-ui doctor"
+    [[ -s "$out" ]] || { rm -f "$out"; die "Capture produced an empty file."; }
     ok "Wrote $out ($(du -h "$out" | cut -f1))"
 }
 

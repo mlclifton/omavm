@@ -212,11 +212,22 @@ between guest applications. Those never reach the host; `clip` is what does.
 ## Step 8 — watch without interfering
 
 ```bash
-./manage-agent-vm.sh watch
+./manage-agent-vm.sh watch          # frames every 2 seconds
+./manage-agent-vm.sh watch 5        # or every 5
 ```
 
-This pulls frames over SSH on an interval. Your pointer never enters the guest,
-so an agent driving the cursor keeps it.
+This pulls frames over SSH. Your pointer never enters the guest, so an agent
+driving the cursor keeps it.
+
+In a terminal that can draw images, such as foot or kitty, the frames appear
+directly in the terminal. `watch` asks the terminal whether it supports sixel
+rather than guessing from `$TERM`, because drawing sixel at a terminal that
+cannot render it fills the screen with rubbish. Force it with `--inline` if
+your terminal supports it but does not say so, and `--no-inline` to just write
+the file.
+
+Without image support each frame is written to one path, printed at the start,
+which you can open in any viewer.
 
 You can attach a real viewer instead:
 
