@@ -43,6 +43,12 @@ dist/
 *.log
 logs/
 
+# Screenshots. The tutorial has you capture frames into the working directory,
+# and a stray 2 MB PNG is easy to commit without noticing.
+*.png
+*.ppm
+omavm-*.png
+
 # ---------------------------------------------------------------------------
 # Local overrides. Copy config/omavm.conf here to change settings without
 # carrying machine specific paths in the tracked config.

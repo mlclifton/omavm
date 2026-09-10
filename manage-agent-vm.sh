@@ -977,7 +977,15 @@ cmd_watch() {
 
     local frame
     frame=$(mktemp -t "omavm-watch.XXXXXX.png")
-    trap 'rm -f "$frame" "${frame}.new"; printf "\n"' RETURN EXIT INT TERM
+
+    # A handler that only tidies up does not stop anything. bash runs it and
+    # then carries straight on round the loop, so the files come back and the
+    # process never exits, which made Ctrl-C look like it did nothing. The
+    # handler has to exit as well.
+    watch_cleanup() { rm -f "$frame" "${frame}.new"; printf '\n'; }
+    trap 'watch_cleanup' EXIT
+    trap 'watch_cleanup; exit 130' INT
+    trap 'watch_cleanup; exit 143' TERM
 
     stage "Pulling frames from the guest every ${interval}s. Ctrl-C to stop."
     info "Your pointer never enters the guest, so the agent keeps the cursor."
