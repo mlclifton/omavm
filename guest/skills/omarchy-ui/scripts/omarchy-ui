@@ -52,6 +52,11 @@ export YDOTOOL_SOCKET="${YDOTOOL_SOCKET:-${XDG_RUNTIME_DIR}/ydotoold.socket}"
 
 SETTLE="${OMARCHY_UI_SETTLE:-0.15}"
 
+# A short digest of this script, so "am I running the build I think I am?" has
+# an answer. A stale copy in the guest is otherwise invisible: it runs, it just
+# lacks whatever was added since.
+self_digest() { sha256sum "${BASH_SOURCE[0]}" 2>/dev/null | cut -c1-12; }
+
 die() { echo "omarchy-ui: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || die "$1 is not installed"; }
 
@@ -384,6 +389,7 @@ cmd_doctor() {
     echo "  HYPRLAND_INSTANCE_SIGNATURE=${HYPRLAND_INSTANCE_SIGNATURE:-unset}"
     echo "  YDOTOOL_SOCKET=$YDOTOOL_SOCKET"
     echo "  OMARCHY_PATH=${OMARCHY_PATH:-unset}"
+    echo "  build=$(self_digest)"
     if (( failures )); then
         echo
         echo "  $failures check(s) failed. If the socket is missing, start the daemon:"
@@ -438,6 +444,7 @@ Wait (do this before clicking on something you just opened):
   wait-layer <namespace> [secs]
 
   doctor                      check the environment and say what is broken
+  build                       print this script's digest, to spot a stale copy
 
 Coordinates are Hyprland logical pixels, global across all outputs.
 Set OMARCHY_UI_SETTLE to change the pause after each action (default 0.15s).
@@ -467,6 +474,7 @@ case "${1:-}" in
     wait-window)  shift; cmd_wait_window "$@" ;;
     wait-layer)   shift; cmd_wait_layer "$@" ;;
     doctor)       shift; cmd_doctor "$@" ;;
+    build)        shift; self_digest ;;
     ""|-h|--help|help) usage ;;
     *) usage; exit 2 ;;
 esac

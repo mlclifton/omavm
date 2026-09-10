@@ -786,17 +786,24 @@ script and want the guest to have the change.
 time. Editing the repository changes nothing in a running guest, and a `reset`
 would discard anything you copied in by hand.
 
-**For a quick iteration**, copy it into the running guest and try it:
+**For a quick iteration**, push it into the running guest:
 
 ```bash
-scp -i ~/.ssh/omavm_agent_ed25519 \
-    guest/skills/omarchy-ui/scripts/omarchy-ui agent@192.168.100.10:/tmp/
-./manage-agent-vm.sh ssh -- sudo install -m 0755 /tmp/omarchy-ui /usr/local/bin/omarchy-ui
-./manage-agent-vm.sh ssh -- omarchy-ui doctor
+./manage-agent-vm.sh sync-ui
 ```
 
-That survives until the next `reset`, which is what you want while you are
-still changing it.
+It copies the tool and the skill in, installs them, and then checks that the
+guest is running the build you just sent. That check matters: a stale copy is
+invisible otherwise, because it runs perfectly well and simply lacks whatever
+you added since. Compare by hand any time you are unsure:
+
+```bash
+sha256sum guest/skills/omarchy-ui/scripts/omarchy-ui | cut -c1-12
+./manage-agent-vm.sh ssh -- omarchy-ui build
+```
+
+`sync-ui` survives until the next `reset`, which is what you want while you are
+still changing the tool.
 
 **To make it permanent**, put it in the base:
 

@@ -17,6 +17,8 @@
 #   ssh       Run a command in the guest, or open a shell.
 #   paste     Type the host clipboard into the guest, key by key. For use
 #             before the guest is sealed, when nothing else works.
+#   sync-ui   Install the current omarchy-ui and skill into a running guest,
+#             without a full re-seal. Lasts until the next reset.
 #   clip      Move the clipboard between host and guest over SSH.
 #             `clip pull` guest to host, `clip push` host to guest.
 #   refresh   Boot a writable copy of the base so you can update it.
@@ -853,6 +855,47 @@ cmd_clip() {
     esac
 }
 
+# Install the agent tooling into a running guest without a full re-seal.
+#
+# Sealing is the right way to put this into the base image, but during
+# development the tool changes far more often than the base does, and a stale
+# copy in the guest is invisible: it runs, it just lacks whatever was added
+# since. This checks afterwards rather than assuming.
+cmd_sync_ui() {
+    domain_running || die "The guest is not running."
+    guest_exec true 2>/dev/null || die "The guest is not reachable over SSH."
+
+    local src="${REPO_DIR}/guest/skills/omarchy-ui"
+    local want
+    want=$(sha256sum "${src}/scripts/omarchy-ui" | cut -c1-12)
+
+    stage "Installing the agent tooling into the guest"
+    scp -q -i "$SSH_KEY" $SSH_OPTS \
+        "${src}/scripts/omarchy-ui" "${src}/SKILL.md" \
+        "${GUEST_USER}@${GUEST_IP}:/tmp/" \
+        || die "Could not copy the files into the guest."
+
+    info "The guest will ask for the sudo password for ${GUEST_USER}."
+    ssh -t -i "$SSH_KEY" $SSH_OPTS "${GUEST_USER}@${GUEST_IP}" '
+        set -e
+        sudo install -m 0755 /tmp/omarchy-ui /usr/local/bin/omarchy-ui
+        mkdir -p ~/.claude/skills/omarchy-ui
+        install -m 0644 /tmp/SKILL.md ~/.claude/skills/omarchy-ui/SKILL.md
+        rm -f /tmp/omarchy-ui /tmp/SKILL.md
+    ' || die "Installation in the guest failed."
+
+    local got
+    got=$(guest_exec omarchy-ui build 2>/dev/null || echo none)
+    if [[ "$got" == "$want" ]]; then
+        ok "Guest is running build ${got}, matching this repository"
+    else
+        die "Guest reports build '${got}' but this repository has '${want}'.
+    Something else is earlier in the guest PATH. Check with:
+        $0 ssh -- 'command -v omarchy-ui'"
+    fi
+    warn "This lasts until the next reset. Run '$0 seal' to put it in the base."
+}
+
 cmd_status() {
     stage "Status"
     printf '  %-22s %s\n' "profile" "$PROFILE"
@@ -930,9 +973,15 @@ main() {
     local cmd="${1:-status}"
     shift || true
     case "$cmd" in
-        init|build|rebuild|seal|freeze|reset|start|stop|reboot|gui|ssh|watch|screenshot|paste|clip|refresh|status|logs)
+        init|build|rebuild|seal|freeze|reset|start|stop|reboot|gui|ssh|watch| \
+        screenshot|paste|clip|refresh|status|logs)
             require_libvirt_access
             "cmd_${cmd}" "$@"
+            ;;
+        # Hyphenated names cannot map straight onto a function name.
+        sync-ui)
+            require_libvirt_access
+            cmd_sync_ui "$@"
             ;;
         -h|--help|help) usage ;;
         *) usage; exit 2 ;;

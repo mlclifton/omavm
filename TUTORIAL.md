@@ -32,6 +32,18 @@ omarchy-ui environment:
 If anything says `FAILED`, stop and read the line under it. `doctor` names the
 specific broken thing rather than making you guess.
 
+**If you see only eight checks and no `OMARCHY_PATH` line**, the guest is
+running an older build of the tool than this repository has. Push the current
+one in:
+
+```bash
+./manage-agent-vm.sh sync-ui
+```
+
+A stale copy is otherwise invisible, because it runs fine and simply lacks
+whatever was added since. `omarchy-ui build` prints a digest you can compare
+against `sha256sum guest/skills/omarchy-ui/scripts/omarchy-ui | cut -c1-12`.
+
 ---
 
 ## Step 1 — look before you touch
