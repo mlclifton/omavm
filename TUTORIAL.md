@@ -14,7 +14,8 @@ All of it runs from the host, in `~/Projects/omavm`.
 ./manage-agent-vm.sh ssh -- omarchy-ui doctor
 ```
 
-You want nine `ok` lines:
+You want nine `ok` lines. `clipboard readable` may say `ok (empty)`, which is
+fine: it means the clipboard is working and has nothing on it.
 
 ```
 omarchy-ui environment:
@@ -26,7 +27,7 @@ omarchy-ui environment:
   ydotoold socket              ok
   omarchy shell responds       ok
   OMARCHY_PATH resolved        ok
-  clipboard readable           ok
+  clipboard readable           ok (empty)
 ```
 
 If anything says `FAILED`, stop and read the line under it. `doctor` names the

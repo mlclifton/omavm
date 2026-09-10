@@ -431,9 +431,16 @@ cmd_wait_layer() {
 
 cmd_doctor() {
     local failures=0
+    local -a failed=()
     check() {
         printf '  %-28s ' "$1"
-        if eval "$2" >/dev/null 2>&1; then echo "ok"; else echo "FAILED"; failures=$((failures+1)); fi
+        if eval "$2" >/dev/null 2>&1; then
+            echo "ok"
+        else
+            echo "FAILED"
+            failures=$((failures + 1))
+            failed+=("$1")
+        fi
     }
     echo "omarchy-ui environment:"
     check "hyprctl responds"      "hyprctl version"
@@ -444,7 +451,21 @@ cmd_doctor() {
     check "ydotoold socket"       "[ -S \"\$YDOTOOL_SOCKET\" ]"
     check "omarchy shell responds" "omarchy-shell -q shell ping"
     check "OMARCHY_PATH resolved"  "[ -d \"$OMARCHY_PATH\" ]"
-    check "clipboard readable"    "wl-paste --list-types"
+
+    # An empty clipboard is not a fault. wl-paste exits non-zero and says
+    # "Nothing is copied" when there is simply nothing on it, which says the
+    # protocol is working, not that it is broken.
+    local clip_out
+    printf '  %-28s ' "clipboard readable"
+    if clip_out=$(wl-paste --list-types 2>&1); then
+        echo "ok"
+    elif grep -qi 'nothing is copied' <<<"$clip_out"; then
+        echo "ok (empty)"
+    else
+        echo "FAILED"
+        failures=$((failures + 1))
+        failed+=("clipboard readable")
+    fi
     echo
     echo "  WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-unset}"
     echo "  HYPRLAND_INSTANCE_SIGNATURE=${HYPRLAND_INSTANCE_SIGNATURE:-unset}"
@@ -453,9 +474,31 @@ cmd_doctor() {
     echo "  build=$(self_digest)"
     if (( failures )); then
         echo
-        echo "  $failures check(s) failed. If the socket is missing, start the daemon:"
-        echo "      systemctl --user start ydotoold"
-        echo "  If hyprctl or grim fail, there is no graphical session for this user."
+        printf '  %d check(s) failed:\n' "$failures"
+        local f
+        for f in "${failed[@]}"; do
+            case "$f" in
+                "ydotoold socket")
+                    echo "  - the input daemon is not running. Pointer and clicks need it;"
+                    echo "    typing and screenshots do not. Start it with:"
+                    echo "        systemctl --user start ydotoold" ;;
+                "hyprctl responds"|"a monitor is present")
+                    echo "  - no graphical session for this user, so there is no desktop"
+                    echo "    to drive. Check the guest reached its login and autologged in." ;;
+                "grim captures")
+                    echo "  - screen capture failed even though the compositor answered." ;;
+                "wtype present"|"ydotool present")
+                    echo "  - ${f%% *} is not installed. Re-seal the guest to install it." ;;
+                "omarchy shell responds")
+                    echo "  - the Omarchy shell is not running, so menus will not open." ;;
+                "OMARCHY_PATH resolved")
+                    echo "  - the Omarchy tree was not found. Is Omarchy installed here?" ;;
+                "clipboard readable")
+                    echo "  - the compositor did not answer a clipboard request. This is"
+                    echo "    different from the clipboard merely being empty." ;;
+                *)  echo "  - $f" ;;
+            esac
+        done
         return 1
     fi
 }
