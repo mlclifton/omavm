@@ -103,7 +103,7 @@ cmd_monitors() {
 
 cmd_cursor() {
     need hyprctl
-    hyprctl cursorpos
+    cursor_xy && echo
 }
 
 cmd_bar() {
@@ -159,12 +159,73 @@ button_code() {
     esac
 }
 
+# Where the compositor says the pointer is, as two numbers.
+cursor_xy() {
+    local pos
+    pos=$(hyprctl cursorpos 2>/dev/null) || return 1
+    printf '%s %s' "${pos%%,*}" "${pos##*, }"
+}
+
+# ydotool units are not screen pixels here. On this guest a request to move 100
+# lands the pointer 200 pixels away, for absolute and relative moves alike, and
+# nothing in the compositor's input configuration accounts for it. Rather than
+# hardcode a factor that may be different on another machine, measure it once
+# and cache it for the session.
+#
+# The result is units-per-pixel times 100, so the arithmetic stays integer.
+POINTER_SCALE_CACHE="${XDG_RUNTIME_DIR}/omarchy-ui-pointer-scale"
+
+pointer_scale() {
+    local cached probe=200 bx by ax ay moved
+    if [[ -r "$POINTER_SCALE_CACHE" ]]; then
+        cached=$(<"$POINTER_SCALE_CACHE")
+        # Keyed to the compositor instance, so a restarted session recalibrates.
+        if [[ "${cached%% *}" == "${HYPRLAND_INSTANCE_SIGNATURE:-none}" ]]; then
+            printf '%s' "${cached##* }"
+            return
+        fi
+    fi
+
+    ydotool mousemove -a -x 0 -y 0 >/dev/null 2>&1
+    read -r bx by <<<"$(cursor_xy)" || { printf '100'; return; }
+    ydotool mousemove -x "$probe" -y "$probe" >/dev/null 2>&1
+    read -r ax ay <<<"$(cursor_xy)" || { printf '100'; return; }
+
+    moved=$(( ax - bx ))
+    if (( moved <= 0 )); then
+        printf '100'
+        return
+    fi
+    local scale=$(( moved * 100 / probe ))
+    (( scale < 1 )) && scale=100
+    printf '%s %s' "${HYPRLAND_INSTANCE_SIGNATURE:-none}" "$scale" > "$POINTER_SCALE_CACHE"
+    printf '%s' "$scale"
+}
+
 cmd_move() {
     need ydotool
+    need hyprctl
     [[ $# -eq 2 ]] || die "usage: omarchy-ui move X Y"
-    # ydotool writes its own diagnostics to stdout, which would otherwise be
-    # mixed into anything a caller is parsing. Errors still reach stderr.
-    ydotool mousemove -a -x "$1" -y "$2" >/dev/null
+    local tx="$1" ty="$2" scale cx cy dx dy i
+
+    scale=$(pointer_scale)
+
+    # Seed with an absolute move, scaled into ydotool's units.
+    ydotool mousemove -a -x $(( tx * 100 / scale )) -y $(( ty * 100 / scale )) >/dev/null
+
+    # Then close the loop. Integer division leaves a pixel or two, and the
+    # compositor is the only thing that knows where the pointer really is.
+    for (( i = 0; i < 4; i++ )); do
+        read -r cx cy <<<"$(cursor_xy)" || break
+        dx=$(( tx - cx )); dy=$(( ty - cy ))
+        (( dx == 0 && dy == 0 )) && break
+        # Never round a non-zero correction down to nothing, or a one-pixel
+        # error loops forever.
+        local mx=$(( dx * 100 / scale )) my=$(( dy * 100 / scale ))
+        (( mx == 0 && dx != 0 )) && mx=$(( dx > 0 ? 1 : -1 ))
+        (( my == 0 && dy != 0 )) && my=$(( dy > 0 ? 1 : -1 ))
+        ydotool mousemove -x "$mx" -y "$my" >/dev/null
+    done
     settle
 }
 

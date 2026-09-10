@@ -30,6 +30,7 @@ below simply does not arise.
 | Seal reports the wrong guest account | [Set GUEST_USER](#the-guest-account-name-does-not-match) | After an install |
 | Seal keeps failing the same way after a fix | [Check for a stale seal server](#seal-keeps-running-an-old-script) | After an interrupted seal |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
+| Clicks land in the wrong place | [Recalibrate the pointer](#clicks-land-in-the-wrong-place) | After a display change |
 | You changed the agent skill or `omarchy-ui` | [Push the change into the guest](#updating-the-agent-skill) | Whenever you edit it |
 | The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
@@ -727,6 +728,49 @@ trusting what you see:
 ```bash
 ./manage-agent-vm.sh ssh -- hyprctl cursorpos
 ```
+
+---
+
+## Clicks land in the wrong place
+
+**Trigger.** `omarchy-ui at X Y` moves the pointer somewhere other than X,Y, or
+clicks land at the wrong spot, often near a screen edge.
+
+**Why it happens.** ydotool units are not screen pixels. On this guest a
+request to move 100 lands the pointer 200 pixels away, for absolute and
+relative moves alike, and nothing in the compositor's input configuration
+accounts for it. Positions past half the screen get clamped to the edge, which
+is why the symptom often looks like "everything ends up bottom right".
+
+`omarchy-ui` measures the factor once per session and then verifies each move
+against `hyprctl cursorpos`, so it should be pixel exact regardless.
+
+**Check it:**
+
+```bash
+./manage-agent-vm.sh ssh -- 'omarchy-ui move 960 540 && omarchy-ui cursor'
+# 960 540
+```
+
+Anything other than the requested numbers means the correction is not working.
+
+**Steps.** Drop the cached calibration and let it measure again. It is keyed to
+the compositor instance, so a restarted session recalibrates on its own, but a
+resolution change within one session will not:
+
+```bash
+./manage-agent-vm.sh ssh -- 'rm -f $XDG_RUNTIME_DIR/omarchy-ui-pointer-scale'
+./manage-agent-vm.sh ssh -- 'omarchy-ui move 960 540 && omarchy-ui cursor'
+```
+
+**If it is still wrong**, confirm the compositor is reporting sensibly:
+
+```bash
+./manage-agent-vm.sh ssh -- omarchy-ui monitors
+```
+
+The coordinate space is the full monitor layout, so a second output placed to
+the left gives negative x values.
 
 ---
 
