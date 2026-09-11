@@ -1043,9 +1043,19 @@ where the passphrase has already authenticated you; without encryption, logging
 straight in would mean no authentication at all. Sealing sets up autologin, so
 the prompt appears once and then stops.
 
-To tell the two apart without logging in: a disk passphrase appears before any
-desktop, on a plain text screen, and names a device. The desktop login is
-graphical and names your account.
+**Telling them apart is harder than it sounds**, because Omarchy's login theme
+is a single password box with no username field. Do not go by appearance. Check
+the disk instead, which settles it without logging in:
+
+```bash
+qemu-io -f qcow2 -r -c "read -v $((4196352 * 512)) 16" \
+    /var/lib/libvirt/images/omavm/base-build.qcow2
+```
+
+Adjust the offset to your root partition's start, which `qemu-img dd` plus a
+GPT read will give you. All zeros there means no LUKS header and therefore no
+disk encryption, so any password prompt is the desktop login. The LUKS magic,
+were it encrypted, would read `4c554b53babe`.
 
 **Why it matters here.** An encrypted guest asks for a passphrase at every
 boot, so it cannot start unattended and `reset` stops being useful. On the host

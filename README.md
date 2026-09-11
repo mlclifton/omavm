@@ -226,7 +226,9 @@ which does not exist until step 4.
 ## Step 3 — seal the guest
 
 **You will be asked for a password at the first boot after installing.** That is
-the desktop login, not disk encryption. Omarchy does not enable autologin on an
+the desktop login, not disk encryption, even though it does not look like one:
+Omarchy's login theme is a single password box with no username field, so it is
+easily mistaken for a passphrase prompt. Omarchy does not enable autologin on an
 unencrypted install, because the passphrase it would otherwise have replaced is
 not there. Log in with the account password you chose. Sealing configures
 autologin, so this is the only time you need it.
