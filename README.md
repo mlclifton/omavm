@@ -205,8 +205,10 @@ mode the file itself has.
 
 Install Omarchy as you normally would, with two constraints:
 
-1. **Create the user account named `agent`.** If you prefer another name, change
-   `GUEST_USER` in `config/omavm.conf` before you seal.
+1. **Create the user account named `agent`**, which is what `GUEST_USER` in
+   `config/omavm.conf` expects. Any other name works too, as long as the two
+   agree: sealing reports the account it actually found and tells you what to
+   set if they differ.
 2. **Turn off disk encryption**, which is on by default and is not offered as a
    menu item. On the final confirmation screen, the one that says everything
    will be overwritten, there is a dim grey line reading **"Press Ctrl+C for

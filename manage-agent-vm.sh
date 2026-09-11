@@ -241,6 +241,32 @@ guest_exec() {
 
 guest_frame() { guest_exec "${OMAVM_UI:-omarchy-ui} shot -"; }
 
+# The seal script inside the guest requests /whoami/<user>. Watch the server's
+# access log for it, so the host learns the real account name rather than
+# assuming the configured one is right. Without this, a mismatch between the
+# account you created and GUEST_USER leaves seal waiting for an SSH login that
+# will never succeed, with nothing on screen to say why.
+wait_for_guest_user() {
+    local log="$1" timeout="${2:-900}" i=0 line name
+    printf '    waiting for the guest to run it ' >&2
+    while (( i < timeout * 2 )); do
+        # Match the whole path segment against what a user name may contain,
+        # rather than extracting loosely and validating afterwards.
+        line=$(grep -oE 'GET /whoami/[A-Za-z0-9_][A-Za-z0-9_-]{0,31} ' "$log" 2>/dev/null | tail -1) || true
+        if [[ -n "$line" ]]; then
+            name="${line#GET /whoami/}"
+            printf ' reported\n' >&2
+            echo "${name% }"
+            return 0
+        fi
+        (( i % 20 == 0 )) && printf '.' >&2
+        sleep 0.5
+        i=$(( i + 1 ))
+    done
+    printf ' no report\n' >&2
+    return 0
+}
+
 wait_for_ssh() {
     local timeout="${1:-180}" elapsed=0
     printf '    waiting for ssh on %s ' "$VM_IP"
@@ -545,6 +571,16 @@ cmd_seal() {
     info "Or have the host type it for you, from another terminal:"
     printf '      %s %s paste --enter '"'"'curl -sL %s:%s/s | sudo bash'"'"'\n\n' \
         "$0" "$VM" "$HOST_IP" "$SEAL_HTTP_PORT"
+
+    local reported
+    reported=$(wait_for_guest_user "${serve_dir}/access.log" 900)
+    if [[ -n "$reported" && "$reported" != "$GUEST_USER" ]]; then
+        warn "The guest account is '${reported}', not '${GUEST_USER}'."
+        info "Continuing with '${reported}'. To make that permanent, set"
+        info "GUEST_USER=\"${reported}\" in config/omavm.conf, or every later"
+        info "command will keep looking for '${GUEST_USER}'."
+        GUEST_USER="$reported"
+    fi
 
     if wait_for_ssh 900; then
         ok "Guest sealed and reachable over SSH"

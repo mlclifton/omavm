@@ -525,6 +525,18 @@ account that invoked `sudo`, reports that name back to the host, and the host
 switches to it for the rest of the run. It prints a warning saying which name
 it found.
 
+**If seal is stuck at `waiting for ssh`**, that recovery is not happening and
+the host is retrying as the wrong account. Read the name the guest reported:
+
+```bash
+grep -o 'whoami/[a-z0-9_-]*' /tmp/tmp.*/access.log | tail -1
+```
+
+Then stop the stuck command and set `GUEST_USER` to that name. Leaving it
+running makes things worse: it retries every three seconds, and enough failed
+attempts trip sshd's limit on unauthenticated connections, so even correct
+logins start being reset.
+
 Make it permanent, or every later command will keep looking for the old name:
 
 ```bash
