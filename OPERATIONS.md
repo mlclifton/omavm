@@ -1037,6 +1037,16 @@ reading the button rather than guessing.
 
 No `crypto_LUKS` row means it worked.
 
+**Expect a password prompt at the first boot anyway.** It is the desktop login,
+not a disk passphrase. Omarchy enables autologin only on encrypted installs,
+where the passphrase has already authenticated you; without encryption, logging
+straight in would mean no authentication at all. Sealing sets up autologin, so
+the prompt appears once and then stops.
+
+To tell the two apart without logging in: a disk passphrase appears before any
+desktop, on a plain text screen, and names a device. The desktop login is
+graphical and names your account.
+
 **Why it matters here.** An encrypted guest asks for a passphrase at every
 boot, so it cannot start unattended and `reset` stops being useful. On the host
 it is the right default; in a disposable VM whose disk is an overlay of a

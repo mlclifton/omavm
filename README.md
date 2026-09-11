@@ -225,6 +225,20 @@ which does not exist until step 4.
 
 ## Step 3 — seal the guest
 
+**You will be asked for a password at the first boot after installing.** That is
+the desktop login, not disk encryption. Omarchy does not enable autologin on an
+unencrypted install, because the passphrase it would otherwise have replaced is
+not there. Log in with the account password you chose. Sealing configures
+autologin, so this is the only time you need it.
+
+If you want to be sure the disk really is unencrypted:
+
+```bash
+./manage-agent-vm.sh base ssh -- lsblk -o NAME,FSTYPE
+```
+
+No `crypto_LUKS` row means it worked.
+
 With the guest booted to its desktop:
 
 ```bash
