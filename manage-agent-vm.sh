@@ -268,16 +268,38 @@ wait_for_guest_user() {
 }
 
 wait_for_ssh() {
-    local timeout="${1:-180}" elapsed=0
+    local timeout="${1:-180}" elapsed=0 err
     printf '    waiting for ssh on %s ' "$VM_IP"
     while (( elapsed < timeout )); do
-        if guest_exec true 2>/dev/null; then printf ' up\n'; return 0; fi
+        if err=$(guest_exec true 2>&1); then printf ' up\n'; return 0; fi
+        # A changed host key never resolves by waiting, and the failure is
+        # invisible because the loop swallows it. StrictHostKeyChecking
+        # accept-new takes an unknown key but refuses a changed one, which is
+        # exactly what a rebuilt guest presents.
+        if grep -qiE 'host key verification failed|identification has changed' <<<"$err"; then
+            printf '\n'
+            die "The guest at ${VM_IP} is presenting a different SSH host key.
+
+    That is expected after rebuilding: a fresh install generates new host keys,
+    and the old ones are still recorded here. Forget the old key and retry:
+
+        ssh-keygen -R ${VM_IP} -f ${HOME}/.ssh/known_hosts_omavm
+
+    If you have NOT rebuilt this guest, do not clear it. A host key that
+    changes on its own is the warning it is meant to be."
+        fi
         printf '.'
         sleep 3
         elapsed=$((elapsed + 3))
     done
     printf ' timed out\n'
     return 1
+}
+
+# A fresh install generates new SSH host keys, so anything recorded for this
+# address is now wrong and would block every later connection.
+forget_host_key() {
+    ssh-keygen -R "$VM_IP" -f "${HOME}/.ssh/known_hosts_omavm" &>/dev/null || true
 }
 
 start_proxy() {
@@ -500,6 +522,7 @@ cmd_build() {
 
     stage "Booting the installer"
     domain_running && $VIRSH destroy "$VM_DOMAIN" >/dev/null
+    forget_host_key
     sudo rm -f "$NVRAM_FILE"
     define_domain "$STAGED_ISO"
     $VIRSH start "$VM_DOMAIN" >/dev/null

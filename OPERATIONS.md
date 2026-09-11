@@ -429,6 +429,12 @@ ssh-keygen -R 192.168.100.10 -f ~/.ssh/known_hosts_omavm
 
 If you did not rebuild the base, stop and investigate before connecting.
 
+**If seal is stuck at `waiting for ssh` after a rebuild**, this is the cause.
+`StrictHostKeyChecking=accept-new` takes an unknown key but refuses a changed
+one, so the connection fails every time and the loop keeps retrying. Current
+versions forget the old key when a build starts and report the mismatch instead
+of waiting, but a guest rebuilt by other means still needs the command above.
+
 ---
 
 ## The guest boots to a black screen
