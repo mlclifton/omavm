@@ -9,10 +9,17 @@ All of it runs from the host, in `~/Projects/omavm`.
 
 ## Before you start
 
+This walkthrough uses a VM called `webapp`. Create one if you have not already,
+and substitute your own name throughout:
+
 ```bash
-./manage-agent-vm.sh start
-./manage-agent-vm.sh ssh -- omarchy-ui doctor
+./manage-agent-vm.sh new webapp
+./manage-agent-vm.sh webapp start
+./manage-agent-vm.sh webapp ssh -- omarchy-ui doctor
 ```
+
+The name always comes first, before the command. That is deliberate: it cannot
+be forgotten, so you cannot reset the wrong guest.
 
 You want nine `ok` lines. `clipboard readable` may say `ok (empty)`, which is
 fine: it means the clipboard is working and has nothing on it.
@@ -38,7 +45,7 @@ running an older build of the tool than this repository has. Push the current
 one in:
 
 ```bash
-./manage-agent-vm.sh sync-ui
+./manage-agent-vm.sh webapp sync-ui
 ```
 
 A stale copy is otherwise invisible, because it runs fine and simply lacks
@@ -53,7 +60,7 @@ Ask the compositor what is on screen. This is faster than a screenshot and it
 gives you exact numbers rather than an estimate.
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui monitors
+./manage-agent-vm.sh webapp ssh -- omarchy-ui monitors
 ```
 
 ```
@@ -63,8 +70,8 @@ Virtual-1  1920x1080@74  at 0,0  scale=1  focused=true
 That is your coordinate space. All positions are in these pixels.
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui windows
-./manage-agent-vm.sh ssh -- omarchy-ui layers
+./manage-agent-vm.sh webapp ssh -- omarchy-ui windows
+./manage-agent-vm.sh webapp ssh -- omarchy-ui layers
 ```
 
 On a fresh desktop `windows` prints nothing, because there are none. `layers`
@@ -82,7 +89,7 @@ the window list.
 ## Step 2 — take a screenshot
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui shot - > desktop.png
+./manage-agent-vm.sh webapp ssh -- omarchy-ui shot - > desktop.png
 ```
 
 The `-` sends the PNG to stdout so you can redirect it to the host. Leave it off
@@ -99,8 +106,8 @@ bar are all included.
 ## Step 3 — open an app
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui launch foot
-./manage-agent-vm.sh ssh -- omarchy-ui wait-window foot 10
+./manage-agent-vm.sh webapp ssh -- omarchy-ui launch foot
+./manage-agent-vm.sh webapp ssh -- omarchy-ui wait-window foot 10
 ```
 
 `wait-window` blocks until the window exists and fails if it never does. **Do
@@ -108,7 +115,7 @@ not skip it.** Clicking where a window is about to be is the most common way
 this kind of automation goes wrong.
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui windows
+./manage-agent-vm.sh webapp ssh -- omarchy-ui windows
 ```
 
 ```
@@ -118,8 +125,8 @@ this kind of automation goes wrong.
 ## Step 4 — click, and type
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui click-window foot
-./manage-agent-vm.sh ssh -- omarchy-ui focused
+./manage-agent-vm.sh webapp ssh -- omarchy-ui click-window foot
+./manage-agent-vm.sh webapp ssh -- omarchy-ui focused
 ```
 
 ```
@@ -133,14 +140,14 @@ for you.
 Now type into it:
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui type "echo hello from the guest"
-./manage-agent-vm.sh ssh -- omarchy-ui key Return
+./manage-agent-vm.sh webapp ssh -- omarchy-ui type "echo hello from the guest"
+./manage-agent-vm.sh webapp ssh -- omarchy-ui key Return
 ```
 
 Check it worked by capturing just that window:
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui shot --window foot - > term.png
+./manage-agent-vm.sh webapp ssh -- omarchy-ui shot --window foot - > term.png
 ```
 
 The screenshot shows the command and its output. Key names are X keysyms:
@@ -152,9 +159,9 @@ The screenshot shows the command and its output. Key names are X keysyms:
 When you already know where something is, skip the matching:
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui at 960 540
-./manage-agent-vm.sh ssh -- omarchy-ui at 100 13 right
-./manage-agent-vm.sh ssh -- omarchy-ui cursor
+./manage-agent-vm.sh webapp ssh -- omarchy-ui at 960 540
+./manage-agent-vm.sh webapp ssh -- omarchy-ui at 100 13 right
+./manage-agent-vm.sh webapp ssh -- omarchy-ui cursor
 ```
 
 The bar is 26 pixels tall at the top, so `y=13` is the middle of it. Get its
@@ -163,8 +170,8 @@ real geometry with `omarchy-ui bar` rather than assuming.
 ## Step 6 — open the Omarchy menu
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui menu system
-./manage-agent-vm.sh ssh -- omarchy-ui layers
+./manage-agent-vm.sh webapp ssh -- omarchy-ui menu system
+./manage-agent-vm.sh webapp ssh -- omarchy-ui layers
 ```
 
 ```
@@ -175,8 +182,8 @@ Routes are `root`, `apps`, `capture`, `hardware`, `system`, `theme`,
 `background`, `share` and `toggle`.
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui shot - > menu.png
-./manage-agent-vm.sh ssh -- omarchy-ui menu-close
+./manage-agent-vm.sh webapp ssh -- omarchy-ui shot - > menu.png
+./manage-agent-vm.sh webapp ssh -- omarchy-ui menu-close
 ```
 
 This calls the shell's IPC directly rather than pressing `SUPER + SPACE`, and
@@ -186,8 +193,8 @@ calling it twice leaves the menu open both times instead of flipping it shut.
 ## Step 7 — move text between guest and host
 
 ```bash
-./manage-agent-vm.sh ssh -- 'printf "copied inside the guest" | omarchy-ui clip-set'
-./manage-agent-vm.sh clip pull
+./manage-agent-vm.sh webapp ssh -- 'printf "copied inside the guest" | omarchy-ui clip-set'
+./manage-agent-vm.sh webapp clip pull
 wl-paste
 # copied inside the guest
 ```
@@ -196,8 +203,8 @@ And the other way:
 
 ```bash
 printf 'from the host' | wl-copy
-./manage-agent-vm.sh clip push
-./manage-agent-vm.sh ssh -- omarchy-ui clip-get
+./manage-agent-vm.sh webapp clip push
+./manage-agent-vm.sh webapp ssh -- omarchy-ui clip-get
 # from the host
 ```
 
@@ -212,8 +219,8 @@ between guest applications. Those never reach the host; `clip` is what does.
 ## Step 8 — watch without interfering
 
 ```bash
-./manage-agent-vm.sh watch          # frames every 2 seconds
-./manage-agent-vm.sh watch 5        # or every 5
+./manage-agent-vm.sh webapp watch          # frames every 2 seconds
+./manage-agent-vm.sh webapp watch 5        # or every 5
 ```
 
 This pulls frames over SSH. Your pointer never enters the guest, so an agent
@@ -232,7 +239,7 @@ which you can open in any viewer.
 You can attach a real viewer instead:
 
 ```bash
-./manage-agent-vm.sh gui
+./manage-agent-vm.sh webapp gui
 ```
 
 But understand the trade. **A focused viewer window forwards your host pointer
@@ -243,7 +250,7 @@ over yourself.
 ## Step 9 — put it back
 
 ```bash
-./manage-agent-vm.sh reset
+./manage-agent-vm.sh webapp reset
 ```
 
 Destroys the running guest, discards every change since the last reset, and
@@ -259,8 +266,9 @@ A complete loop an agent can run, with a check after every action:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
-VM=~/Projects/omavm/manage-agent-vm.sh
-run() { "$VM" ssh -- omarchy-ui "$@"; }
+VM=webapp
+MANAGE=~/Projects/omavm/manage-agent-vm.sh
+run() { "$MANAGE" "$VM" ssh -- omarchy-ui "$@"; }
 
 run doctor >/dev/null || { echo "guest not ready"; exit 1; }
 
@@ -290,7 +298,7 @@ echo "captured $(file -b /tmp/result.png)"
 ## When something breaks
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui doctor
+./manage-agent-vm.sh webapp ssh -- omarchy-ui doctor
 ```
 
 The two you are most likely to see:

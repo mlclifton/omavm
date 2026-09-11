@@ -21,7 +21,6 @@
 set -uo pipefail
 
 GUEST_USER="@GUEST_USER@"
-VM_HOSTNAME="@VM_NAME@"
 SANDBOX_HOST_IP="@SANDBOX_HOST_IP@"
 SANDBOX_PREFIX="@SANDBOX_SUBNET_PREFIX@"
 PROXY_PORT="@PROXY_PORT@"
@@ -282,7 +281,15 @@ User=${GUEST_USER}
 Session=omarchy.desktop
 AUTOLOGIN
 
-hostnamectl set-hostname "$VM_HOSTNAME" 2>/dev/null || echo "$VM_HOSTNAME" > /etc/hostname
+# The hostname comes from DHCP, so each VM created from this base adopts its
+# own name rather than inheriting whatever the installer set. Without this
+# every VM would be called the same thing and you could not tell two terminals
+# apart.
+install -d -m 0755 /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/20-omavm-hostname.conf <<'NMHOST'
+[main]
+hostname-mode=dhcp
+NMHOST
 
 # --------------------------------------------------------------------------
 step "Removing per-install state"

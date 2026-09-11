@@ -19,8 +19,39 @@ source "${REPO_DIR}/config/omavm.conf"
 
 VIRSH="virsh --connect qemu:///system"
 
+usage() {
+    cat <<USAGE
+usage: $0 <vm> [--host-only]
+       $0 --host-only
+
+Asserts that the sandbox profile still contains the guest. Host-side checks
+always run; guest-side checks need a VM name and a running guest.
+USAGE
+}
+
+VM=""
 HOST_ONLY=0
-[[ "${1:-}" == "--host-only" ]] && HOST_ONLY=1
+while (( $# )); do
+    case "$1" in
+        --host-only) HOST_ONLY=1 ;;
+        -h|--help)   usage; exit 0 ;;
+        *)           VM="$1" ;;
+    esac
+    shift
+done
+
+# The libvirt network's DHCP reservations are the VM registry. This is the
+# same lookup manage-agent-vm.sh does, kept local so this script stays
+# runnable on its own.
+GUEST_IP=""
+if [[ -n "$VM" ]]; then
+    GUEST_IP=$($VIRSH net-dumpxml "$VM_NET" 2>/dev/null \
+        | grep -oP "name='${VM}' ip='\K[^']+" | head -1)
+    [[ -n "$GUEST_IP" ]] || { echo "No VM named '$VM' on $VM_NET." >&2; exit 2; }
+    VM_DOMAIN="omarchy-${VM}"
+else
+    HOST_ONLY=1
+fi
 
 # This script asserts containment, which only the sandbox profile claims to
 # provide. Under the workstation profile the guest is meant to have internet,
@@ -160,7 +191,7 @@ fi
 # --------------------------------------------------------------------------
 if (( HOST_ONLY )); then
     stage "Guest checks skipped (--host-only)"
-elif ! guest true; then
+elif [[ -z "$VM" ]] || ! guest true; then
     stage "Guest checks skipped"
     skip "Guest is not reachable at ${GUEST_IP}. Start it with ./manage-agent-vm.sh start"
 else

@@ -73,10 +73,15 @@
     <controller type='pci' index='0' model='pcie-root'/>
     <controller type='virtio-serial' index='0'/>
 
+    <!-- port isolated stops this guest reaching other guests on the same
+         bridge, while still allowing the host and, on a NAT network, the
+         outside. Without it, separating projects into different VMs would
+         separate nothing at the network level. -->
     <interface type='network'>
       <source network='@NETWORK@'/>
       <mac address='@GUEST_MAC@'/>
       <model type='virtio'/>
+      <port isolated='yes'/>
     </interface>
 
     <!-- Absolute pointing. A relative PS/2 mouse makes coordinate-based GUI

@@ -59,7 +59,7 @@ chording keys, and waits for it to appear.
 An agent on the host can use the same tool over SSH:
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui shot -  > frame.png
+./manage-agent-vm.sh webapp ssh -- omarchy-ui shot -  > frame.png
 ```
 
 `omarchy-ui` discovers the graphical session's environment itself, so it works
@@ -68,8 +68,8 @@ over SSH without a login shell or any exported variables.
 ## Clipboard
 
 ```bash
-./manage-agent-vm.sh clip pull      # guest clipboard -> host
-./manage-agent-vm.sh clip push      # host clipboard -> guest
+./manage-agent-vm.sh webapp clip pull      # guest clipboard -> host
+./manage-agent-vm.sh webapp clip push      # host clipboard -> guest
 ```
 
 This goes over SSH and needs no viewer attached.
@@ -84,12 +84,50 @@ agent ships later.
 To watch without interfering:
 
 ```bash
-./manage-agent-vm.sh watch          # pulls frames over SSH, touches nothing
-./manage-agent-vm.sh screenshot     # one frame to a file
+./manage-agent-vm.sh webapp watch          # pulls frames over SSH, touches nothing
+./manage-agent-vm.sh webapp screenshot     # one frame to a file
 ```
 
 Host-side capture is not available. QEMU cannot screendump a virgl guest and
 reports `no surface`, so frames come from `grim` inside the guest instead.
+
+## Named VMs
+
+Every VM has a name, and the name always comes first:
+
+```bash
+./manage-agent-vm.sh webapp start
+./manage-agent-vm.sh api reset
+```
+
+It cannot be omitted and it cannot be mistaken for a command's own argument, so
+there is no way to reset the wrong guest by forgetting a flag. An unknown name
+is an error listing the VMs that do exist, never a new VM created by accident.
+
+**One base image, many overlays.** Every VM is a copy-on-write overlay of the
+same frozen base, so a second project VM costs a few hundred kilobytes rather
+than another 60 GB. Patch the base once and every VM picks it up at its next
+reset.
+
+**`base` is reserved.** It is the writable guest that produces that image, and
+`init`, `build`, `rebuild`, `seal`, `freeze` and `refresh` accept no other
+name. It is removed automatically once you freeze, since keeping it would hold
+an address and a 60 GB disk for nothing.
+
+**VMs cannot reach each other.** The domain sets `<port isolated='yes'/>`, so
+guests on the shared bridge can reach the host and the outside but not each
+other. Without that, separating projects into different VMs would separate
+nothing at the network level.
+
+**Memory is what limits how many you run at once**, not disk. The default is
+6144 MB per VM, which fits three alongside the host on 27 GB. Override it per
+VM in `config/vm/<name>.conf`.
+
+```bash
+./manage-agent-vm.sh list
+./manage-agent-vm.sh new api
+./manage-agent-vm.sh rm api
+```
 
 ## Profiles
 
@@ -108,7 +146,7 @@ are one setting rather than several you have to keep consistent.
 Override for one command without editing anything:
 
 ```bash
-OMAVM_PROFILE=sandbox ./manage-agent-vm.sh start
+OMAVM_PROFILE=sandbox ./manage-agent-vm.sh webapp start
 ```
 
 The sandbox profile is documented in `OPERATIONS.md`. The rest of this file
@@ -128,6 +166,7 @@ describes the workstation profile.
 | `proxy/` | Allowlisting proxy and credential gateway. Sandbox profile only. |
 | `guest/seal-guest.sh` | Runs once inside the guest to prepare it. |
 | `guest/skills/omarchy-ui/` | The agent skill and the `omarchy-ui` command. |
+| `config/vm/<name>.conf` | Optional per-VM overrides. None needed by default. |
 | `TUTORIAL.md` | **Start here.** A worked walkthrough of driving the desktop. |
 | `OPERATIONS.md` | Every recurring manual task, with its trigger. |
 
@@ -155,8 +194,8 @@ swapping it would remove a dependency of your running ufw.
 Download the ISO from <https://omarchy.org>, then:
 
 ```bash
-./manage-agent-vm.sh init
-./manage-agent-vm.sh build --iso ~/Downloads/omarchy.iso
+./manage-agent-vm.sh base init
+./manage-agent-vm.sh base build --iso ~/Downloads/omarchy.iso
 ```
 
 The ISO is copied into `/var/lib/libvirt/images/omavm/` first. QEMU does not run
@@ -180,7 +219,7 @@ which does not exist until step 4.
 With the guest booted to its desktop:
 
 ```bash
-./manage-agent-vm.sh seal
+./manage-agent-vm.sh base seal
 ```
 
 It prints one command to run in a terminal inside the guest.
@@ -191,7 +230,7 @@ cannot be there before the step runs. Either type the command, or have the host
 type it for you:
 
 ```bash
-./manage-agent-vm.sh paste --enter 'curl -sL 192.168.100.1:8765/s | sudo bash'
+./manage-agent-vm.sh webapp paste --enter 'curl -sL 192.168.100.1:8765/s | sudo bash'
 ```
 
 If the punctuation arrives wrong, for instance a pipe appearing as a tilde, the
@@ -199,7 +238,7 @@ guest is not on a US keyboard layout. Set `KEYBOARD_LAYOUT` in
 `config/omavm.conf`, or for one run:
 
 ```bash
-OMAVM_KEYBOARD_LAYOUT=gb ./manage-agent-vm.sh paste --enter 'curl -sL ...'
+OMAVM_KEYBOARD_LAYOUT=gb ./manage-agent-vm.sh webapp paste --enter 'curl -sL ...'
 ```
 
 `paste` injects keystrokes at the virtual keyboard through qemu, below anything
@@ -220,8 +259,8 @@ change again, so if it ever does, that is a real signal.
 ## Step 4 — freeze the base
 
 ```bash
-./manage-agent-vm.sh stop
-./manage-agent-vm.sh freeze
+./manage-agent-vm.sh webapp stop
+./manage-agent-vm.sh base freeze
 ```
 
 `freeze` compacts the installed disk into a read-only base image and performs
@@ -230,15 +269,30 @@ copy-on-write overlay of it.
 
 ---
 
+## Step 5 — create your VMs
+
+```bash
+./manage-agent-vm.sh new webapp
+./manage-agent-vm.sh new api
+```
+
+Each gets the next free address, a DHCP reservation, its own overlay and its
+own UEFI variables. The reservation is the registry: there is no separate file
+to drift out of sync with libvirt, and `virsh net-dumpxml agent-net` shows the
+same truth the script works from.
+
+Each VM takes its hostname from that reservation, so the two are
+distinguishable from inside.
+
 ## Daily use
 
 ```bash
-./manage-agent-vm.sh start        # boot, no viewer, agent has the cursor
-./manage-agent-vm.sh ssh          # shell in the guest
-./manage-agent-vm.sh watch        # see what it is doing, touch nothing
-./manage-agent-vm.sh gui          # attach a viewer, takes the pointer when focused
-./manage-agent-vm.sh status
-./manage-agent-vm.sh stop
+./manage-agent-vm.sh webapp start        # boot, no viewer, agent has the cursor
+./manage-agent-vm.sh webapp ssh          # shell in the guest
+./manage-agent-vm.sh webapp watch        # see what it is doing, touch nothing
+./manage-agent-vm.sh webapp gui          # attach a viewer, takes the pointer when focused
+./manage-agent-vm.sh webapp status
+./manage-agent-vm.sh webapp stop
 ```
 
 **The guest is persistent.** The overlay survives stop and start, so tools the
@@ -246,7 +300,7 @@ agent installs and work in progress carry over. `reset` is the explicit way back
 to the frozen base:
 
 ```bash
-./manage-agent-vm.sh reset
+./manage-agent-vm.sh webapp reset
 ```
 
 That destroys the running domain without asking, deletes the overlay, creates a
@@ -266,7 +320,7 @@ Then set `SHARE_DIR="${HOME}/Projects/omavm-share"` in `config/omavm.conf`, or
 for one session:
 
 ```bash
-OMAVM_SHARE_DIR=~/Projects/omavm-share ./manage-agent-vm.sh start
+OMAVM_SHARE_DIR=~/Projects/omavm-share ./manage-agent-vm.sh webapp start
 ```
 
 It appears in the guest at `/mnt/omavm` over virtiofs. `SHARE_READONLY="yes"`
@@ -281,10 +335,10 @@ would bypass the network controls.
 
 | Setting | Default | Notes |
 |---|---|---|
+| Addresses | 192.168.100.10 to .99 | Allocated in order as VMs are created |
 | Memory | 12288 MB | `VM_MEM_MB` |
 | vCPUs | 6 | `VM_VCPUS` |
 | Resolution | 1920x1080 | `VIDEO_WIDTH`, `VIDEO_HEIGHT` |
-| Guest address | 192.168.100.10 | Reserved by MAC |
 | Guest user | `agent` | `GUEST_USER` |
 
 Keep the resolution fixed. An agent clicking at coordinates needs the viewport

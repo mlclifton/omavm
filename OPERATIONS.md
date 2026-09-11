@@ -15,6 +15,7 @@ below simply does not arise.
 | An agent run fails with a proxy denial | [Allowlist a host](#an-agent-is-blocked-by-the-proxy) | Sandbox only |
 | You want an agent to use a new API without holding its key | [Add a gateway route](#add-a-gateway-route-for-a-new-api) | Sandbox only |
 | Base image is more than a month old, or lacks a package you need | [Refresh the base](#the-base-image-is-stale) | Monthly |
+| You need a VM for a new project, or want one gone | [Add or remove a VM](#adding-and-removing-vms) | As projects come and go |
 | `pacman -Syu` touched mesa, the kernel, libvirt, qemu or ufw | [Re-verify isolation](#after-a-host-system-update) | Every host update |
 | `verify-isolation.sh` exits non-zero | [Triage a failed verification](#isolation-verification-failed) | Sandbox only |
 | You reloaded, reset or reinstalled ufw | [Reapply the bridge rules](#ufw-was-reloaded-or-reset) | On change |
@@ -154,12 +155,53 @@ lower than you expect, that is why.
 
 ---
 
+## Adding and removing VMs
+
+**Trigger.** A new project needs its own guest, or an old one is finished with.
+
+**Steps.**
+
+```bash
+./manage-agent-vm.sh new api          # next free address, fresh overlay
+./manage-agent-vm.sh list             # what exists and what it is doing
+./manage-agent-vm.sh rm api           # asks you to type the name to confirm
+```
+
+`new` costs almost nothing in disk, because every VM is a copy-on-write overlay
+of the same base. Memory is the real limit: at the default 6144 MB you can run
+three alongside the host on 27 GB. Override per VM in `config/vm/<name>.conf`.
+
+**If you run out of addresses**, the range is `.10` to `.99` on the active
+network, so ninety VMs. Long before that you would run out of memory.
+
+**To share files with one VM**, create the directory named after it. Nothing is
+shared unless the directory exists:
+
+```bash
+mkdir -p ~/Projects/omavm-share/api
+./manage-agent-vm.sh api stop && ./manage-agent-vm.sh api start
+```
+
+The share is a device on the domain, so it needs a restart rather than a mount.
+
+**Confirm what a VM is:**
+
+```bash
+./manage-agent-vm.sh api status
+```
+
+**Note.** `rm` deletes the overlay, which is everything that VM has written
+since its last reset. There is no undo, which is why it asks you to type the
+name rather than pressing y.
+
+---
+
 ## The base image is stale
 
 **Trigger.** Any of:
 
 - The base is more than about a month old. Check with
-  `./manage-agent-vm.sh status`.
+  `./manage-agent-vm.sh webapp status`.
 - An agent needs a package that is not in the base.
 - An Omarchy release you want to test against has shipped.
 
@@ -167,11 +209,16 @@ lower than you expect, that is why.
 installs survives, by design, so the only way to change what the guest has is to
 rebuild the base.
 
+**This affects every VM.** They all overlay the same base, so a refresh reaches
+all of them at their next reset. That is usually the point, since you patch
+once. It also means a mistake in the base reaches everything, so freeze only
+what you have checked.
+
 **Steps.**
 
 ```bash
-./manage-agent-vm.sh refresh          # boots a writable copy of the base on the NAT network
-./manage-agent-vm.sh ssh
+./manage-agent-vm.sh base refresh          # boots a writable copy of the base on the NAT network
+./manage-agent-vm.sh webapp ssh
 ```
 
 Inside the guest:
@@ -186,19 +233,19 @@ exit
 Back on the host:
 
 ```bash
-./manage-agent-vm.sh stop
-./manage-agent-vm.sh freeze           # compacts, replaces the base, closes the build network, resets
+./manage-agent-vm.sh webapp stop
+./manage-agent-vm.sh base freeze           # compacts, replaces the base, closes the build network, resets
 ```
 
 **Confirm.**
 
 ```bash
-./manage-agent-vm.sh status
+./manage-agent-vm.sh webapp status
 ```
 
 **Note.** The old base is not deleted until `freeze` succeeds, so a refresh that
 goes wrong costs you nothing. If you abandon a refresh halfway, run
-`./manage-agent-vm.sh reset` to go back to the frozen base.
+`./manage-agent-vm.sh webapp reset` to go back to the frozen base.
 
 ---
 
@@ -215,7 +262,7 @@ change can leave the per-domain NVRAM file inconsistent with the new firmware.
 
 ```bash
 ./verify-isolation.sh --host-only     # before booting anything
-./manage-agent-vm.sh start
+./manage-agent-vm.sh webapp start
 ./verify-isolation.sh                 # full check with the guest up
 ```
 
@@ -223,7 +270,7 @@ If the guest fails to boot after an `edk2-ovmf` upgrade, reset. That restores
 NVRAM from the new firmware template:
 
 ```bash
-./manage-agent-vm.sh reset
+./manage-agent-vm.sh webapp reset
 ```
 
 If the display is black, see [black screen](#the-guest-boots-to-a-black-screen).
@@ -277,7 +324,7 @@ guest immediately, then work back through the network definition and the
 nftables ruleset:
 
 ```bash
-./manage-agent-vm.sh stop --force
+./manage-agent-vm.sh webapp stop --force
 ```
 
 **`Base image mode is not 444`.** Resets are no longer deterministic, because
@@ -285,7 +332,7 @@ something has been able to write to the base:
 
 ```bash
 sudo chmod 0444 /var/lib/libvirt/images/omavm/omarchy-agent-base.qcow2
-./manage-agent-vm.sh reset
+./manage-agent-vm.sh webapp reset
 ```
 
 Treat the base as suspect if you cannot explain how it became writable.
@@ -349,10 +396,10 @@ it has to change and nothing inside it was exposed.
 ```bash
 rm -f ~/.ssh/omavm_agent_ed25519 ~/.ssh/omavm_agent_ed25519.pub
 ./install_host_deps.sh --yes          # regenerates the keypair
-./manage-agent-vm.sh refresh          # boot the base writable
-./manage-agent-vm.sh seal             # reinstalls the new public key
-./manage-agent-vm.sh stop
-./manage-agent-vm.sh freeze
+./manage-agent-vm.sh base refresh          # boot the base writable
+./manage-agent-vm.sh base seal             # reinstalls the new public key
+./manage-agent-vm.sh webapp stop
+./manage-agent-vm.sh base freeze
 ```
 
 The new key has to go into the base, otherwise the next reset restores the old
@@ -393,14 +440,14 @@ version skew between them shows up exactly this way.
 **Steps.** First confirm it is graphics and not the guest by checking SSH:
 
 ```bash
-./manage-agent-vm.sh ssh -- uptime
+./manage-agent-vm.sh webapp ssh -- uptime
 ```
 
 If SSH works, the guest is fine and the problem is rendering. Boot without 3D:
 
 ```bash
-./manage-agent-vm.sh stop --force
-ACCEL3D=no GL_ENABLE=no ./manage-agent-vm.sh start --gui
+./manage-agent-vm.sh webapp stop --force
+ACCEL3D=no GL_ENABLE=no ./manage-agent-vm.sh webapp start --gui
 ```
 
 That gives you a working, slow desktop with software rendering, which is enough
@@ -451,7 +498,7 @@ hand:
 
 ```bash
 pkill -f 'http.server 8765 --bind'
-./manage-agent-vm.sh seal
+./manage-agent-vm.sh base seal
 ```
 
 **Confirm.** `seal` now prints `Serving on 192.168.100.1:8765` once it has
@@ -486,7 +533,7 @@ sed -i 's/^GUEST_USER=.*/GUEST_USER="thename"/' config/omavm.conf
 **Confirm.**
 
 ```bash
-./manage-agent-vm.sh ssh -- id -un
+./manage-agent-vm.sh webapp ssh -- id -un
 ```
 
 **If you have already frozen a base** with the wrong name in the config, only
@@ -519,7 +566,7 @@ sed -i 's/^KEYBOARD_LAYOUT=.*/KEYBOARD_LAYOUT="${OMAVM_KEYBOARD_LAYOUT:-gb}"/' c
 Or for a single run, without changing anything:
 
 ```bash
-OMAVM_KEYBOARD_LAYOUT=gb ./manage-agent-vm.sh paste --enter 'some | text'
+OMAVM_KEYBOARD_LAYOUT=gb ./manage-agent-vm.sh webapp paste --enter 'some | text'
 ```
 
 Supported values are `us` and `gb`. Add more in `apply_keyboard_layout` in
@@ -528,7 +575,7 @@ Supported values are `us` and `gb`. Add more in `apply_keyboard_layout` in
 **Confirm.**
 
 ```bash
-./manage-agent-vm.sh paste --dry-run 'a|b'
+./manage-agent-vm.sh webapp paste --dry-run 'a|b'
 ```
 
 Under `gb` the pipe should be `KEY_LEFTSHIFT KEY_102ND`, under `us`
@@ -547,8 +594,8 @@ reverse.
 **Use the SSH route. It works.**
 
 ```bash
-./manage-agent-vm.sh clip pull      # guest clipboard -> host
-./manage-agent-vm.sh clip push      # host clipboard -> guest
+./manage-agent-vm.sh webapp clip pull      # guest clipboard -> host
+./manage-agent-vm.sh webapp clip push      # host clipboard -> guest
 ```
 
 This does not involve SPICE at all, so it works with no viewer attached, which
@@ -578,7 +625,7 @@ with the clipboard not working, because the missing piece is Wayland support in
 `SUPER + SHIFT + C`. Check what is bound:
 
 ```bash
-./manage-agent-vm.sh ssh -- 'grep -rn "Universal" /usr/share/omarchy/default/hypr/bindings/clipboard.lua'
+./manage-agent-vm.sh webapp ssh -- 'grep -rn "Universal" /usr/share/omarchy/default/hypr/bindings/clipboard.lua'
 ```
 
 Those move text within the guest. Getting it to the host is the `clip` command
@@ -587,8 +634,8 @@ above.
 **Confirm the round trip:**
 
 ```bash
-./manage-agent-vm.sh ssh -- 'printf hello | omarchy-ui clip-set'
-./manage-agent-vm.sh clip pull
+./manage-agent-vm.sh webapp ssh -- 'printf hello | omarchy-ui clip-set'
+./manage-agent-vm.sh webapp clip pull
 wl-paste
 ```
 
@@ -606,15 +653,15 @@ sitting at `waiting for ssh`.
 remote access step and everything else can be fixed from the host:
 
 ```bash
-./manage-agent-vm.sh ssh -- true && echo "ssh is up"
+./manage-agent-vm.sh webapp ssh -- true && echo "ssh is up"
 ```
 
 **If SSH answers**, the seal script prints a summary of what did not complete.
 Work through it from the host rather than re-running the whole thing:
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui doctor
-./manage-agent-vm.sh ssh -- 'sudo pacman -S --needed grim ydotool wtype jq'
+./manage-agent-vm.sh webapp ssh -- omarchy-ui doctor
+./manage-agent-vm.sh webapp ssh -- 'sudo pacman -S --needed grim ydotool wtype jq'
 ```
 
 **If SSH does not answer but the seal script reported no errors**, the guest's
@@ -678,8 +725,8 @@ virtual keyboard through qemu, below anything the guest is running, so it needs
 no guest agent and works from the firmware screen onwards:
 
 ```bash
-./manage-agent-vm.sh paste 'the text to type' --enter
-./manage-agent-vm.sh paste                    # or whatever is on your clipboard
+./manage-agent-vm.sh webapp paste 'the text to type' --enter
+./manage-agent-vm.sh webapp paste                    # or whatever is on your clipboard
 ```
 
 Click into the guest window first, so the keystrokes land where you want them.
@@ -693,7 +740,7 @@ long paste is visibly slow and anything non-ASCII is skipped with a warning.
 running and ordinary clipboard sharing works in both directions:
 
 ```bash
-./manage-agent-vm.sh ssh -- systemctl is-active spice-vdagentd
+./manage-agent-vm.sh webapp ssh -- systemctl is-active spice-vdagentd
 ```
 
 ---
@@ -712,7 +759,7 @@ path by which the two machines share input.
 guest over SSH and does not need one:
 
 ```bash
-./manage-agent-vm.sh watch
+./manage-agent-vm.sh webapp watch
 ```
 
 That pulls frames from the guest over SSH so you can see what is happening
@@ -726,7 +773,7 @@ motion.
 trusting what you see:
 
 ```bash
-./manage-agent-vm.sh ssh -- hyprctl cursorpos
+./manage-agent-vm.sh webapp ssh -- hyprctl cursorpos
 ```
 
 ---
@@ -748,7 +795,7 @@ against `hyprctl cursorpos`, so it should be pixel exact regardless.
 **Check it:**
 
 ```bash
-./manage-agent-vm.sh ssh -- 'omarchy-ui move 960 540 && omarchy-ui cursor'
+./manage-agent-vm.sh webapp ssh -- 'omarchy-ui move 960 540 && omarchy-ui cursor'
 # 960 540
 ```
 
@@ -759,14 +806,14 @@ the compositor instance, so a restarted session recalibrates on its own, but a
 resolution change within one session will not:
 
 ```bash
-./manage-agent-vm.sh ssh -- 'rm -f $XDG_RUNTIME_DIR/omarchy-ui-pointer-scale'
-./manage-agent-vm.sh ssh -- 'omarchy-ui move 960 540 && omarchy-ui cursor'
+./manage-agent-vm.sh webapp ssh -- 'rm -f $XDG_RUNTIME_DIR/omarchy-ui-pointer-scale'
+./manage-agent-vm.sh webapp ssh -- 'omarchy-ui move 960 540 && omarchy-ui cursor'
 ```
 
 **If it is still wrong**, confirm the compositor is reporting sensibly:
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui monitors
+./manage-agent-vm.sh webapp ssh -- omarchy-ui monitors
 ```
 
 The coordinate space is the full monitor layout, so a second output placed to
@@ -787,28 +834,28 @@ will not have them.
 **Steps.** Check the daemon is running in the user session, not as root:
 
 ```bash
-./manage-agent-vm.sh ssh -- systemctl --user status ydotoold
-./manage-agent-vm.sh ssh -- 'echo $YDOTOOL_SOCKET'
+./manage-agent-vm.sh webapp ssh -- systemctl --user status ydotoold
+./manage-agent-vm.sh webapp ssh -- 'echo $YDOTOOL_SOCKET'
 ```
 
 Or ask the tool itself, which checks every part of the path:
 
 ```bash
-./manage-agent-vm.sh ssh -- omarchy-ui doctor
+./manage-agent-vm.sh webapp ssh -- omarchy-ui doctor
 ```
 
 If the unit is missing, the base predates the control kit and needs re-sealing:
 
 ```bash
-./manage-agent-vm.sh refresh
-./manage-agent-vm.sh seal
-./manage-agent-vm.sh stop && ./manage-agent-vm.sh freeze
+./manage-agent-vm.sh base refresh
+./manage-agent-vm.sh base seal
+./manage-agent-vm.sh webapp stop && ./manage-agent-vm.sh base freeze
 ```
 
 If the unit is present but failing, the uinput device is usually the cause:
 
 ```bash
-./manage-agent-vm.sh ssh -- 'ls -l /dev/uinput; id'
+./manage-agent-vm.sh webapp ssh -- 'ls -l /dev/uinput; id'
 ```
 
 The agent user must be in the `input` group, and the device must be mode 0660
@@ -833,7 +880,7 @@ would discard anything you copied in by hand.
 **For a quick iteration**, push it into the running guest:
 
 ```bash
-./manage-agent-vm.sh sync-ui
+./manage-agent-vm.sh webapp sync-ui
 ```
 
 It copies the tool and the skill in, installs them, and then checks that the
@@ -843,7 +890,7 @@ you added since. Compare by hand any time you are unsure:
 
 ```bash
 sha256sum guest/skills/omarchy-ui/scripts/omarchy-ui | cut -c1-12
-./manage-agent-vm.sh ssh -- omarchy-ui build
+./manage-agent-vm.sh webapp ssh -- omarchy-ui build
 ```
 
 `sync-ui` survives until the next `reset`, which is what you want while you are
@@ -852,18 +899,18 @@ still changing the tool.
 **To make it permanent**, put it in the base:
 
 ```bash
-./manage-agent-vm.sh refresh
-./manage-agent-vm.sh seal
-./manage-agent-vm.sh stop
-./manage-agent-vm.sh freeze
+./manage-agent-vm.sh base refresh
+./manage-agent-vm.sh base seal
+./manage-agent-vm.sh base stop
+./manage-agent-vm.sh base freeze
 ```
 
 **Confirm.**
 
 ```bash
-./manage-agent-vm.sh reset
-./manage-agent-vm.sh start
-./manage-agent-vm.sh ssh -- omarchy-ui --help | head -3
+./manage-agent-vm.sh webapp reset
+./manage-agent-vm.sh webapp start
+./manage-agent-vm.sh webapp ssh -- omarchy-ui --help | head -3
 ```
 
 Running `reset` first is the point: it proves the change is in the base rather
@@ -878,7 +925,7 @@ than in a copy that a reset would throw away.
 **First, is a share configured at all?** It is off by default:
 
 ```bash
-./manage-agent-vm.sh status
+./manage-agent-vm.sh webapp status
 ```
 
 If it says `disabled`, set `SHARE_DIR` in `config/omavm.conf` and restart the
@@ -888,7 +935,7 @@ this needs a stop and start rather than a mount command.
 **If it says enabled but the guest has nothing:**
 
 ```bash
-./manage-agent-vm.sh ssh -- 'mount | grep virtiofs; sudo mount -a'
+./manage-agent-vm.sh webapp ssh -- 'mount | grep virtiofs; sudo mount -a'
 ```
 
 The fstab entry uses `nofail`, deliberately, so the guest still boots when the
@@ -929,15 +976,15 @@ The domain is re-rendered on every boot, so this applies at the next start. It
 does **not** affect a running guest:
 
 ```bash
-./manage-agent-vm.sh stop
-./manage-agent-vm.sh start --gui
+./manage-agent-vm.sh webapp stop
+./manage-agent-vm.sh webapp start --gui
 ```
 
 **Steps, for dynamic resizing.** This only works on a sealed guest, because the
 installer media does not run a display agent. Check the agent is up:
 
 ```bash
-./manage-agent-vm.sh ssh -- systemctl is-active spice-vdagentd
+./manage-agent-vm.sh webapp ssh -- systemctl is-active spice-vdagentd
 ```
 
 Then enable automatic resizing in the viewer, under View, "Automatically resize".
@@ -947,7 +994,7 @@ resolution, which looks blurry rather than sharp.
 **Confirm.**
 
 ```bash
-./manage-agent-vm.sh ssh -- hyprctl monitors
+./manage-agent-vm.sh webapp ssh -- hyprctl monitors
 ```
 
 **Worth keeping in mind.** A fixed resolution is a feature for agent work, not a
@@ -1013,8 +1060,8 @@ still wins regardless of what libvirt permits.
 
 ## The guest got the wrong address
 
-**Trigger.** `./manage-agent-vm.sh ssh` times out, and
-`./manage-agent-vm.sh status` shows the VM running.
+**Trigger.** `./manage-agent-vm.sh webapp ssh` times out, and
+`./manage-agent-vm.sh webapp status` shows the VM running.
 
 **Why it happens.** The DHCP reservation matches on MAC. If the guest sends a
 client identifier derived from something else, dnsmasq may not match the
@@ -1083,7 +1130,7 @@ The build command now does this for you, but older copies may still be affected.
 
 ## Disk is filling up
 
-**Trigger.** `/var/lib` is short of space, or `./manage-agent-vm.sh status`
+**Trigger.** `/var/lib` is short of space, or `./manage-agent-vm.sh webapp status`
 shows a large overlay.
 
 **Why it happens.** The overlay accumulates every block the guest has written
@@ -1093,7 +1140,7 @@ gigabytes.
 **Steps.**
 
 ```bash
-./manage-agent-vm.sh reset
+./manage-agent-vm.sh webapp reset
 ```
 
 That is the whole fix. A fresh overlay is a few hundred kilobytes.

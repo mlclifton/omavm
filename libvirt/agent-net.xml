@@ -21,7 +21,6 @@
   <ip address='192.168.100.1' netmask='255.255.255.0'>
     <dhcp>
       <range start='192.168.100.10' end='192.168.100.99'/>
-      <host mac='52:54:00:a9:e1:10' name='omarchy-agent' ip='192.168.100.10'/>
     </dhcp>
   </ip>
 </network>

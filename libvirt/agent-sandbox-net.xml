@@ -20,8 +20,7 @@
   <dns enable='no'/>
   <ip address='192.168.101.1' netmask='255.255.255.0'>
     <dhcp>
-      <range start='192.168.101.10' end='192.168.101.10'/>
-      <host mac='52:54:00:a9:e1:10' name='omarchy-agent' ip='192.168.101.10'/>
+      <range start='192.168.101.10' end='192.168.101.99'/>
     </dhcp>
   </ip>
 
