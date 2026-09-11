@@ -119,7 +119,7 @@ this kind of automation goes wrong.
 ```
 
 ```
-0x556abeaee620  ws=1  12,38 1896x1030  class=foot  title=omadev@omarchy-agent:~
+0x556abeaee620  ws=1  12,38 1896x1030  class=foot  title=agent@webapp:~
 ```
 
 ## Step 4 — click, and type
@@ -130,7 +130,7 @@ this kind of automation goes wrong.
 ```
 
 ```
-0x556abeaee620  12,38 1896x1030  class=foot  title=omadev@omarchy-agent:~
+0x556abeaee620  12,38 1896x1030  class=foot  title=agent@webapp:~
 ```
 
 `click-window` finds the window by class or title and clicks its centre. If your

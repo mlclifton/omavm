@@ -281,15 +281,19 @@ User=${GUEST_USER}
 Session=omarchy.desktop
 AUTOLOGIN
 
-# The hostname comes from DHCP, so each VM created from this base adopts its
-# own name rather than inheriting whatever the installer set. Without this
-# every VM would be called the same thing and you could not tell two terminals
-# apart.
+# Take the hostname from DHCP so each VM created from this base adopts its own
+# name instead of inheriting whatever the installer set. Without it every VM is
+# called the same thing and two terminals are indistinguishable.
+#
+# Clearing the static hostname is the part that matters. A static hostname in
+# /etc/hostname outranks anything DHCP offers, so setting hostname-mode alone
+# changes nothing on a guest the installer has already named.
 install -d -m 0755 /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/20-omavm-hostname.conf <<'NMHOST'
 [main]
 hostname-mode=dhcp
 NMHOST
+hostnamectl set-hostname "" 2>/dev/null || : > /etc/hostname
 
 # --------------------------------------------------------------------------
 step "Removing per-install state"

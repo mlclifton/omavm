@@ -29,6 +29,7 @@ below simply does not arise.
 | Seal stops partway with errors | [Get in over SSH and finish it](#seal-stopped-partway) | Rare |
 | Clipboard does not move between host and guest | [Use the SSH route](#clipboard-does-not-work-between-host-and-guest) | Whenever you need it |
 | Seal reports the wrong guest account | [Set GUEST_USER](#the-guest-account-name-does-not-match) | After an install |
+| Two VMs report the same hostname | [Clear the static hostname](#every-vm-has-the-same-hostname) | After a base rebuild |
 | Seal keeps failing the same way after a fix | [Check for a stale seal server](#seal-keeps-running-an-old-script) | After an interrupted seal |
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
 | Clicks land in the wrong place | [Recalibrate the pointer](#clicks-land-in-the-wrong-place) | After a display change |
@@ -332,7 +333,7 @@ nftables ruleset:
 something has been able to write to the base:
 
 ```bash
-sudo chmod 0444 /var/lib/libvirt/images/omavm/omarchy-agent-base.qcow2
+sudo chmod 0444 /var/lib/libvirt/images/omavm/omarchy-base.qcow2
 ./manage-agent-vm.sh webapp reset
 ```
 
@@ -463,7 +464,7 @@ not forget you changed it.
 
 ```bash
 sudo journalctl -u libvirtd -n 50
-sudo cat /var/log/libvirt/qemu/omarchy-agent.log | tail -40
+sudo cat /var/log/libvirt/qemu/omarchy-webapp.log | tail -40
 ```
 
 ---
@@ -511,6 +512,44 @@ you fixed is not the thing being executed, before suspecting the fix.
 
 ---
 
+## Every VM has the same hostname
+
+**Trigger.** A shell in `webapp` and a shell in `api` both report the same name,
+usually whatever you called the machine during the Omarchy install.
+
+**Why it happens.** Each VM is offered its own name over DHCP, from its
+reservation. A static hostname in `/etc/hostname` outranks that, so a base
+whose installer set one passes that name to every VM built from it. Setting
+NetworkManager's `hostname-mode=dhcp` alone does not help, because the static
+name still wins.
+
+**Check which you have:**
+
+```bash
+./manage-agent-vm.sh webapp ssh -- 'hostname; hostnamectl --static'
+```
+
+An empty static hostname is what you want. A name there is what is overriding
+the reservation.
+
+**Steps.** Sealing clears the static hostname, so a base sealed by a current
+version behaves. For a base that predates that, either re-seal it or clear it
+by hand in each VM:
+
+```bash
+./manage-agent-vm.sh webapp ssh -- 'sudo hostnamectl set-hostname ""'
+./manage-agent-vm.sh webapp reboot
+```
+
+Clearing it by hand lasts until that VM's next reset. Re-sealing makes it
+permanent.
+
+**Note.** This is cosmetic. Nothing in the toolkit routes by guest hostname, and
+the host addresses each VM by the name you type. It matters only for telling
+two terminals apart.
+
+---
+
 ## The guest account name does not match
 
 **Trigger.** The seal command fails in the guest with `no such user 'agent'`,
@@ -540,8 +579,12 @@ logins start being reset.
 Make it permanent, or every later command will keep looking for the old name:
 
 ```bash
-sed -i 's/^GUEST_USER=.*/GUEST_USER="thename"/' config/omavm.conf
+sed -i 's/^GUEST_USER=.*/GUEST_USER="agent"/' config/omavm.conf
 ```
+
+Substitute the name the guest reported. The account is baked into the frozen
+base, so every VM shares it; this setting only tells the host which name to
+connect as.
 
 **Confirm.**
 
@@ -727,7 +770,7 @@ nothing.
 **Confirm the host side is not the problem:**
 
 ```bash
-virsh --connect qemu:///system dumpxml omarchy-agent | grep clipboard
+virsh --connect qemu:///system dumpxml omarchy-webapp | grep clipboard
 ```
 
 `copypaste='yes'` means the hypervisor is willing. If it says `no`, you are on

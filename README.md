@@ -205,10 +205,18 @@ mode the file itself has.
 
 Install Omarchy as you normally would, with two constraints:
 
-1. **Create the user account named `agent`**, which is what `GUEST_USER` in
-   `config/omavm.conf` expects. Any other name works too, as long as the two
-   agree: sealing reports the account it actually found and tells you what to
-   set if they differ.
+1. **Create a user account.** The name is yours to choose, with two
+   conditions.
+
+   It must match `GUEST_USER` in `config/omavm.conf`, which ships as `agent`.
+   Use a different name and change that setting to match, either before you
+   seal or when sealing reports the mismatch, which it does automatically.
+
+   It is baked into the frozen base, so **every VM shares this one account**.
+   Changing it afterwards means sealing and freezing again, so it is worth
+   deciding now rather than later.
+
+   Everything in this documentation uses `agent`.
 2. **Turn off disk encryption**, which is on by default and is not offered as a
    menu item. On the final confirmation screen, the one that says everything
    will be overwritten, there is a dim grey line reading **"Press Ctrl+C for
@@ -308,8 +316,10 @@ own UEFI variables. The reservation is the registry: there is no separate file
 to drift out of sync with libvirt, and `virsh net-dumpxml agent-net` shows the
 same truth the script works from.
 
-Each VM takes its hostname from that reservation, so the two are
-distinguishable from inside.
+Each VM takes its hostname from that reservation, so a shell inside `webapp`
+says `webapp` rather than all of them sharing one name. That relies on the base
+having no static hostname, which sealing arranges. If two guests report the
+same name, see the runbook entry on hostnames.
 
 ## Daily use
 
