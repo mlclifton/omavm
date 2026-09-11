@@ -207,8 +207,17 @@ Install Omarchy as you normally would, with two constraints:
 
 1. **Create the user account named `agent`.** If you prefer another name, change
    `GUEST_USER` in `config/omavm.conf` before you seal.
-2. **Do not enable disk encryption.** It works, but you would have to type the
-   passphrase at every boot, which makes unattended starts impossible.
+2. **Turn off disk encryption**, which is on by default and is not offered as a
+   menu item. On the final confirmation screen, the one that says everything
+   will be overwritten, there is a dim grey line reading **"Press Ctrl+C for
+   unencrypted install."** Press Ctrl+C and the button changes to **"Yes,
+   install without encryption"**. Press that.
+
+   Encryption works, but you would have to type the passphrase at every boot,
+   which makes unattended starts impossible and stops `reset` being usable.
+
+   Ctrl+C does not interrupt anything here. The installer uses it as a toggle
+   because its prompt library exits on only two keys.
 
 To throw away a part-finished install and start over, use `rebuild` with the
 same arguments. Do not use `reset` for that: it restores a frozen base image,

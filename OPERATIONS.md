@@ -36,6 +36,7 @@ below simply does not arise.
 | The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
 | Guest has no IP address at all | [Diagnose a missing lease](#the-guest-never-gets-an-ip-address) | Rare |
+| The installer offers no way to skip encryption | [Press Ctrl+C to toggle it](#the-installer-shows-no-encryption-option) | Every base build |
 | A file you passed to the VM gives "Permission denied" | [Stage it where qemu can read it](#permission-denied-on-a-file-you-passed-to-the-vm) | Whenever it happens |
 | `/var/lib` is filling up | [Reclaim overlay space](#disk-is-filling-up) | As needed |
 
@@ -1002,6 +1003,44 @@ limitation. Coordinate based clicking depends on the viewport being the same
 size on every reset, and screenshots are only comparable across runs if the
 geometry does not move. Prefer changing the configured resolution over letting
 the window size decide it.
+
+---
+
+## The installer shows no encryption option
+
+**Trigger.** Building the base, you are looking for a way to install without
+disk encryption and there is no menu item for it.
+
+**Why it happens.** Encryption is on by default and the way to turn it off is a
+keypress, not a choice in a list. The installer's prompt library exits on only
+two keys, so Ctrl+C is reused as a toggle rather than meaning cancel.
+
+**Steps.** Continue to the final confirmation, the screen that says everything
+will be overwritten and there is no recovery possible. Below that line is a dim
+grey hint:
+
+```
+Press Ctrl+C for unencrypted install.
+```
+
+Press Ctrl+C. The confirm button changes from "Yes, install" to **"Yes, install
+without encryption"**. Press that.
+
+Pressing Ctrl+C again toggles back, so you can check which mode you are in by
+reading the button rather than guessing.
+
+**Confirm after installing:**
+
+```bash
+./manage-agent-vm.sh base ssh -- lsblk -o NAME,FSTYPE
+```
+
+No `crypto_LUKS` row means it worked.
+
+**Why it matters here.** An encrypted guest asks for a passphrase at every
+boot, so it cannot start unattended and `reset` stops being useful. On the host
+it is the right default; in a disposable VM whose disk is an overlay of a
+public base image, it protects nothing.
 
 ---
 
