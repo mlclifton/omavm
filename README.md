@@ -114,10 +114,23 @@ reset.
 name. It is removed automatically once you freeze, since keeping it would hold
 an address and a 60 GB disk for nothing.
 
-**VMs cannot reach each other.** The domain sets `<port isolated='yes'/>`, so
-guests on the shared bridge can reach the host and the outside but not each
-other. Without that, separating projects into different VMs would separate
-nothing at the network level.
+**VMs can reach each other by default**, like machines on a LAN, so a project
+split across `webapp` and `api` can talk to itself. To stop that, set
+`GUEST_ISOLATION_DEFAULT_WORKSTATION="yes"` in `config/omavm.conf`, or for one
+command:
+
+```bash
+OMAVM_GUEST_ISOLATION=yes ./manage-agent-vm.sh webapp start
+```
+
+With isolation on, each VM still reaches the host and the outside, but not
+other VMs. The sandbox profile turns it on by default.
+
+It is a network-wide setting, not a per-VM one, and `config/vm/<name>.conf`
+cannot change it. Bridge port isolation only blocks traffic between two
+isolated ports, so an isolated VM can still talk to one that is not. Isolating a
+single VM would look protective while protecting nothing. It takes effect on
+each VM's next start, so after changing it restart every VM that is running.
 
 **Memory is what limits how many you run at once**, not disk. The default is
 6144 MB per VM, which fits three alongside the host on 27 GB. Override it per

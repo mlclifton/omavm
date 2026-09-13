@@ -22,6 +22,10 @@ Things worth overriding here, and nothing else:
 | `SHARE_READONLY` | Make this VM's share read-only |
 | `ACCEL3D`, `GL_ENABLE` | Turn 3D off for this VM after a mesa breakage |
 
+**`GUEST_ISOLATION` cannot be set here.** It is network-wide: an isolated VM
+can still exchange traffic with a non-isolated one, so a per-VM value would
+give false assurance. A value in this file is ignored with a warning.
+
 **Do not set the address, MAC or disk paths here.** They are derived from the
 DHCP reservation, which is the registry of which VMs exist. Overriding them
 would make the script and libvirt disagree about what this VM is.

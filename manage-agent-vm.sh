@@ -212,8 +212,16 @@ resolve_vm() {
     # under `set -e` takes the caller down with it.
     local override="${REPO_DIR}/config/vm/${VM}.conf"
     if [[ -f "$override" ]]; then
+        # Isolation is network-wide. An isolated bridge port can still reach a
+        # non-isolated one, so letting one VM opt in would look protective and
+        # protect nothing. Hold the global value across the override.
+        local isolation="$GUEST_ISOLATION"
         # shellcheck source=/dev/null
         source "$override"
+        if [[ "$GUEST_ISOLATION" != "$isolation" ]]; then
+            warn "Ignoring GUEST_ISOLATION in config/vm/${VM}.conf; it is network-wide."
+            GUEST_ISOLATION="$isolation"
+        fi
     fi
     return 0
 }
@@ -370,7 +378,7 @@ SHARECFG
         -v disk="$DISK_IMAGE" -v net="$VM_NET" -v mac="$VM_MAC" -v node="$RENDER_NODE" \
         -v accel="${ACCEL3D:-yes}" -v gl="${GL_ENABLE:-yes}" -v cdrom="$cdrom" \
         -v vw="$VIDEO_WIDTH" -v vh="$VIDEO_HEIGHT" -v clip="$clipboard" \
-        -v membacking="$membacking" -v share="$share" '
+        -v membacking="$membacking" -v share="$share" -v isolate="$GUEST_ISOLATION" '
         { gsub(/@VM_NAME@/, vm); gsub(/@VM_MEM_KIB@/, mem); gsub(/@VM_VCPUS@/, vcpus);
           gsub(/@OVMF_CODE@/, code); gsub(/@NVRAM_FILE@/, nvram);
           gsub(/@OVMF_VARS_TEMPLATE@/, vars); gsub(/@DISK_IMAGE@/, disk);
@@ -382,6 +390,10 @@ SHARECFG
           if ($0 ~ /@CDROM_BLOCK@/) { sub(/@CDROM_BLOCK@/, cdrom) }
           if ($0 ~ /@MEMBACKING_BLOCK@/) { if (membacking == "") next; sub(/@MEMBACKING_BLOCK@/, membacking) }
           if ($0 ~ /@SHARE_BLOCK@/) { if (share == "") next; sub(/@SHARE_BLOCK@/, share) }
+          if ($0 ~ /@PORT_ISOLATION_LINE@/) {
+              if (isolate != "yes") next
+              sub(/@PORT_ISOLATION_LINE@/, "<port isolated=\x27yes\x27/>")
+          }
           print }
     ' "$TEMPLATE" > "$rendered"
     echo "$rendered"
@@ -911,6 +923,11 @@ cmd_status() {
         printf '  %-20s %s\n' "file share" "disabled"
     fi
     printf '  %-20s %s MB, %s vCPU\n' "sizing" "$VM_MEM_MB" "$VM_VCPUS"
+    if [[ "$GUEST_ISOLATION" == "yes" ]]; then
+        printf '  %-20s %s\n' "other VMs" "unreachable (GUEST_ISOLATION=yes)"
+    else
+        printf '  %-20s %s\n' "other VMs" "reachable (GUEST_ISOLATION=no)"
+    fi
     if [[ -f "$DISK_IMAGE" ]]; then
         printf '  %-20s %s at %s\n' "disk" \
             "$(sudo du -h "$DISK_IMAGE" 2>/dev/null | cut -f1 2>/dev/null || echo '?')" \

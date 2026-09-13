@@ -114,6 +114,13 @@ else
     pass "$WORKSTATION_NET is stopped"
 fi
 
+if [[ "$GUEST_ISOLATION" == "yes" ]]; then
+    pass "Guest-to-guest isolation is on"
+else
+    fail "Guest-to-guest isolation is off" \
+         "A contained guest could reach other VMs. Set GUEST_ISOLATION_DEFAULT_SANDBOX=yes."
+fi
+
 # --------------------------------------------------------------------------
 stage "Host: packet filter"
 

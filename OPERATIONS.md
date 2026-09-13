@@ -16,6 +16,7 @@ below simply does not arise.
 | You want an agent to use a new API without holding its key | [Add a gateway route](#add-a-gateway-route-for-a-new-api) | Sandbox only |
 | Base image is more than a month old, or lacks a package you need | [Refresh the base](#the-base-image-is-stale) | Monthly |
 | You need a VM for a new project, or want one gone | [Add or remove a VM](#adding-and-removing-vms) | As projects come and go |
+| VMs should or should not reach each other | [Change guest isolation](#changing-whether-vms-can-reach-each-other) | When project needs change |
 | `pacman -Syu` touched mesa, the kernel, libvirt, qemu or ufw | [Re-verify isolation](#after-a-host-system-update) | Every host update |
 | `verify-isolation.sh` exits non-zero | [Triage a failed verification](#isolation-verification-failed) | Sandbox only |
 | You reloaded, reset or reinstalled ufw | [Reapply the bridge rules](#ufw-was-reloaded-or-reset) | On change |
@@ -195,6 +196,51 @@ The share is a device on the domain, so it needs a restart rather than a mount.
 **Note.** `rm` deletes the overlay, which is everything that VM has written
 since its last reset. There is no undo, which is why it asks you to type the
 name rather than pressing y.
+
+---
+
+## Changing whether VMs can reach each other
+
+**Trigger.** Two project VMs need to talk to each other and cannot, or you want
+to stop them talking.
+
+**The default.** On the workstation profile VMs can reach each other, like
+machines on a LAN. On the sandbox profile they cannot.
+
+**Steps.** Change the default for the profile in `config/omavm.conf`:
+
+```bash
+GUEST_ISOLATION_DEFAULT_WORKSTATION="yes"
+```
+
+Or for a single command, without editing anything:
+
+```bash
+OMAVM_GUEST_ISOLATION=yes ./manage-agent-vm.sh webapp start
+```
+
+It takes effect at each VM's next start, so restart every running VM:
+
+```bash
+./manage-agent-vm.sh webapp stop && ./manage-agent-vm.sh webapp start
+./manage-agent-vm.sh api stop && ./manage-agent-vm.sh api start
+```
+
+**Why it cannot be set per VM.** Bridge port isolation only blocks traffic
+between two isolated ports. A VM with isolation on can still exchange traffic
+with one that has it off, so isolating a single VM would look protective while
+protecting nothing. A `GUEST_ISOLATION` line in `config/vm/<name>.conf` is
+ignored with a warning for that reason.
+
+**The trap when switching it on.** A VM started before the change keeps the
+old setting until it restarts, and one unisolated VM is enough to keep talking
+to all the others. Restart all of them, then confirm:
+
+```bash
+./manage-agent-vm.sh webapp status | grep 'other VMs'
+./manage-agent-vm.sh webapp ssh -- 'timeout 4 bash -c "echo > /dev/tcp/192.168.100.11/22"' \
+    && echo "still reachable" || echo "isolated"
+```
 
 ---
 
