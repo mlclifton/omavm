@@ -368,11 +368,19 @@ define_one_network() {
         have_ip=$(sudo virsh net-dumpxml "$name" | grep -oP "(?<=<ip address=')[^']+" | head -1)
         if [[ "$want_bridge" == "$have_bridge" && "$want_ip" == "$have_ip" ]]; then
             ok "Network '$name' already defined"
+            add_missing_dns_domain "$name" "$xml"
         else
             warn "Network '$name' does not match this repository:"
             info "  defined here: bridge ${have_bridge}, address ${have_ip}"
             info "  wanted:       bridge ${want_bridge}, address ${want_ip}"
             info "Replacing it stops the network, which disconnects a running guest."
+            local lost
+            lost=$(sudo virsh net-dumpxml --inactive "$name" 2>/dev/null \
+                | grep -oP "<host mac='[^']+' name='\K[^']+" | paste -sd' ' -)
+            if [[ -n "$lost" ]]; then
+                warn "It also discards these VMs' address reservations: ${lost}"
+                info "Their addresses belong to the old subnet, so they cannot carry over."
+            fi
             if confirm; then
                 sudo virsh net-destroy "$name" &>/dev/null || true
                 sudo virsh net-undefine "$name" >/dev/null
@@ -408,6 +416,52 @@ define_one_network() {
         # until a build or a base refresh explicitly starts it.
         run sudo virsh net-autostart --disable "$name" >/dev/null 2>&1 || true
     fi
+}
+
+# Add the DNS domain from the repository's definition to a network that was
+# defined before the domain existed.
+#
+# The live network cannot take it: libvirt refuses to update the domain section
+# of a running network. So this changes the saved definition only, which is
+# harmless, and says a restart is needed.
+#
+# The saved definition is patched rather than replaced, because replacing it
+# from the repository file would erase every VM's DHCP reservation, and those
+# reservations are the VM registry.
+add_missing_dns_domain() {
+    local name="$1" xml="$2" want current tmp
+    want=$(grep -oP "<domain name='[^']+'[^>]*/>" "$xml" | head -1) || true
+    [[ -n "$want" ]] || return 0
+    # A failed read must say so. Under `set -e` a bare failure here would end
+    # the whole installer with no message at all.
+    if ! current=$(sudo virsh net-dumpxml --inactive "$name" 2>/dev/null); then
+        fail "Could not read the saved definition of '$name' to add its DNS domain"
+        return 0
+    fi
+    grep -q "<domain name=" <<<"$current" && return 0
+
+    info "Adding the DNS domain to '$name' so VMs answer to <name>.${DNS_DOMAIN}"
+    (( DRY_RUN )) && { run sudo virsh net-define "<updated $name definition>"; return 0; }
+
+    tmp=$(mktemp -t "${name}.XXXXXX.xml")
+    printf '%s\n' "$current" | awk -v el="  $want" '
+        { print }
+        !done && /<(mtu|bridge) / { print el; done = 1 }
+    ' > "$tmp"
+    if [[ "$(grep -c '<host mac=' <<<"$current")" != "$(grep -c '<host mac=' "$tmp")" ]]; then
+        rm -f "$tmp"
+        fail "Adding the DNS domain to '$name' would change its reservations. Left alone."
+        return
+    fi
+    if sudo virsh net-define "$tmp" >/dev/null; then
+        did "DNS domain added to '$name'"
+        warn "It takes effect when '$name' next starts. Running VMs lose their"
+        info "network briefly when it restarts, so restart it at a convenient time:"
+        info "    sudo virsh net-destroy $name && sudo virsh net-start $name"
+    else
+        fail "Could not add the DNS domain to '$name'"
+    fi
+    rm -f "$tmp"
 }
 
 # Networks this toolkit used to create and no longer does. Left behind they

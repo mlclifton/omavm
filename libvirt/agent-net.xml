@@ -18,6 +18,15 @@
   </forward>
   <bridge name='virbr-agent' stp='on' delay='0'/>
   <mtu size='1500'/>
+  <!-- VMs answer to <name>.omavm on the host. dnsmasq already knows each VM's
+       name from its DHCP reservation; register='yes' tells systemd-resolved to
+       send lookups for the omavm domain to this bridge, and localOnly keeps
+       dnsmasq from forwarding those names upstream. The name must match
+       DNS_DOMAIN in config/omavm.conf.
+
+       Not .local: on hosts with nss-mdns, every .local lookup goes to mDNS and
+       stops there, so a DNS answer for it is never consulted. -->
+  <domain name='omavm' localOnly='yes' register='yes'/>
   <ip address='192.168.100.1' netmask='255.255.255.0'>
     <dhcp>
       <range start='192.168.100.10' end='192.168.100.99'/>

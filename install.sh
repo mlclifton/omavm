@@ -198,6 +198,7 @@ do_remove() {
     info "  the egress proxy service, its user, its config and its logs"
     info "  the ufw rules tagged omavm"
     info "  the libvirt networks ${WORKSTATION_NET} and ${SANDBOX_NET}"
+    info "  the omavm SSH entries and the one Include line in ~/.ssh/config"
     if (( purge )); then
         info "  ${c_red}every VM, the base image, staged ISOs and ${IMAGE_DIR}${c_reset}"
         info "  ${c_red}the SSH key ${SSH_KEY} and its known_hosts file${c_reset}"
@@ -215,6 +216,7 @@ do_remove() {
     remove_proxy
     remove_firewall_rules
     remove_networks
+    remove_ssh_config
     remove_link "$bin_dir"
     run rm -rf "$STATE_DIR"
 
@@ -281,6 +283,30 @@ remove_networks() {
         run_quiet $VIRSH net-undefine "$net"
         (( DRY_RUN )) || ok "Removed network ${net}"
     done
+}
+
+# Take out exactly the one line omavm added, and the file it points at. Every
+# other line in ~/.ssh/config is the user's and is left as it is.
+remove_ssh_config() {
+    stage "Removing SSH entries"
+    local cfg="${HOME}/.ssh/config"
+    if [[ -f "$cfg" ]] && grep -qxF "$SSH_INCLUDE_LINE" "$cfg"; then
+        if (( DRY_RUN )); then
+            info "[dry-run] would delete the line '${SSH_INCLUDE_LINE}' from ~/.ssh/config"
+        else
+            local tmp
+            tmp=$(mktemp "${cfg}.omavm.XXXXXX")
+            grep -vxF "$SSH_INCLUDE_LINE" "$cfg" > "$tmp" || true
+            chmod --reference="$cfg" "$tmp"
+            mv "$tmp" "$cfg"
+            ok "Removed the Include line from ~/.ssh/config"
+        fi
+    else
+        info "No omavm Include line in ~/.ssh/config"
+    fi
+    run rm -rf "$(dirname "$SSH_CONFIG_FILE")"
+    (( DRY_RUN )) || ok "Removed $(dirname "$SSH_CONFIG_FILE")"
+    [[ -f "${cfg}.pre-omavm" ]] && info "Your original config is still saved as ~/.ssh/config.pre-omavm"
 }
 
 # Only remove the link if it is ours. Something else called omavm in the same

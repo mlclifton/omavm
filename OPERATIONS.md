@@ -17,6 +17,7 @@ below simply does not arise.
 | Base image is more than a month old, or lacks a package you need | [Refresh the base](#the-base-image-is-stale) | Monthly |
 | You need a VM for a new project, or want one gone | [Add or remove a VM](#adding-and-removing-vms) | As projects come and go |
 | You want omavm off this host entirely | [Remove omavm](#removing-omavm-from-the-host) | Once |
+| `<vm>.omavm` does not resolve, or `ssh <vm>` is refused | [Fix VM names and SSH](#vm-names-do-not-resolve-or-ssh-is-refused) | After an upgrade, or rarely |
 | VMs should or should not reach each other | [Change guest isolation](#changing-whether-vms-can-reach-each-other) | When project needs change |
 | `pacman -Syu` touched mesa, the kernel, libvirt, qemu or ufw | [Re-verify isolation](#after-a-host-system-update) | Every host update |
 | `verify-isolation.sh` exits non-zero | [Triage a failed verification](#isolation-verification-failed) | Sandbox only |
@@ -156,6 +157,66 @@ sudo journalctl -u omavm-agent-proxy -n 5 | grep 'gateway routes'
 A route whose environment variable is unset is **disabled and logged at
 startup** rather than forwarded without authentication. If your route count is
 lower than you expect, that is why.
+
+---
+
+## VM names do not resolve, or ssh is refused
+
+**Trigger.** `ping webapp.omavm` says the name is not known, or `ssh webapp`
+asks for a password or is refused.
+
+**First, which one is broken?** They are independent. SSH connects by address,
+so it works even when names do not resolve.
+
+```bash
+ssh -G webapp | grep -E '^(hostname|user|identityfile) '
+resolvectl query webapp.omavm
+```
+
+**If `ssh -G` shows your own user and no omavm key**, the SSH entries are
+missing. Rebuild them:
+
+```bash
+./manage-agent-vm.sh ssh-config
+head -1 ~/.ssh/config        # must be: Include ~/.ssh/omavm/config
+```
+
+The Include must be the first line. Below any `Host` or `Match` block, SSH
+applies it only inside that block, so it silently does nothing for everything
+else.
+
+**If the name does not resolve**, check the VM is running first, since a
+stopped VM has no DHCP lease and nothing answers for it:
+
+```bash
+./manage-agent-vm.sh list
+```
+
+Then check the network carries the domain:
+
+```bash
+virsh --connect qemu:///system net-dumpxml agent-net | grep '<domain'
+```
+
+**If that prints nothing**, the running network predates the `.omavm` names.
+libvirt cannot add a DNS domain to a running network, so it takes a restart.
+Re-running `./install_host_deps.sh` adds the domain to the saved definition
+while keeping every VM's reservation, and then says so. Restart the network
+when a brief loss of VM networking is acceptable:
+
+```bash
+sudo virsh net-destroy agent-net && sudo virsh net-start agent-net
+```
+
+Running VMs lose their network while it restarts. If one stays offline
+afterwards, restart that VM.
+
+**Do not redefine the network from `libvirt/agent-net.xml` by hand.** That file
+has no DHCP reservations, and the reservations are the list of which VMs exist.
+Replacing the definition with it forgets every VM's address.
+
+**Plain `ssh agent@<ip>` is refused by design.** The guest accepts only the omavm
+key and password logins are off. Use `ssh <vm>`, which picks the right key.
 
 ---
 

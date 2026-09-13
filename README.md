@@ -170,6 +170,38 @@ shared
 figure is what the VM has written since its last reset, which is the space a
 reset would give back.
 
+**VMs are reachable by name.** From any terminal on the host:
+
+```bash
+ping webapp.omavm
+ssh webapp                 # or ssh webapp.omavm
+scp notes.txt webapp:
+```
+
+Two separate mechanisms make that work.
+
+`ssh webapp` works because `new` and `rm` rewrite `~/.ssh/omavm/config`, an SSH
+config holding one entry per VM with the omavm key, the guest account and
+omavm's own known-hosts file. Your `~/.ssh/config` gains exactly one line at the
+top, `Include ~/.ssh/omavm/config`, and the original is saved as
+`~/.ssh/config.pre-omavm` the first time. Run `./manage-agent-vm.sh ssh-config`
+to rebuild it by hand. It connects by address, so it does not depend on names
+resolving.
+
+`webapp.omavm` resolves because libvirt's DNS server on the bridge already
+knows every VM's name, and the network registers the `omavm` domain with
+systemd-resolved. A stopped VM does not resolve, since there is nothing there
+to answer.
+
+The suffix is `.omavm` rather than `.local` on purpose. Hosts with nss-mdns send
+every `.local` lookup to mDNS and stop there, so a DNS answer for `.local` is
+never consulted. A dedicated suffix also means the SSH entries match only VMs,
+never printers or other machines on your LAN.
+
+Plain `ssh agent@192.168.100.12` is refused. The guest accepts only the omavm
+key and has password logins switched off, and plain `ssh` offers your personal
+key instead. Use `ssh <vm>`, `omavm <vm> ssh`, or pass the key with `-i`.
+
 ## Profiles
 
 One switch, `PROFILE` in `config/omavm.conf`, decides the network, the
