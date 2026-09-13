@@ -142,6 +142,34 @@ VM in `config/vm/<name>.conf`.
 ./manage-agent-vm.sh rm api
 ```
 
+`list` shows the full status of every VM at a glance, and never asks for a
+password:
+
+```
+webapp
+  state        running
+  address      192.168.100.10 on agent-net
+  sizing       6144 MB, 4 vCPU
+  share        /home/mike/Projects/omavm-share/webapp -> /mnt/omavm
+  disk         1.2G written since last reset
+
+api
+  state        running
+  address      192.168.100.11 on agent-net
+  sizing       6144 MB, 4 vCPU
+  share        none
+  disk         1.2G written since last reset
+
+shared
+  profile      workstation
+  other VMs    reachable (GUEST_ISOLATION=no)
+  base image   4.9G, frozen 2026-09-11
+```
+
+`./manage-agent-vm.sh webapp status` shows the same fields for one VM. The disk
+figure is what the VM has written since its last reset, which is the space a
+reset would give back.
+
 ## Profiles
 
 One switch, `PROFILE` in `config/omavm.conf`, decides the network, the

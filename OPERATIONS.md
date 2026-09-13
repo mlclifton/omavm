@@ -248,8 +248,8 @@ to all the others. Restart all of them, then confirm:
 
 **Trigger.** Any of:
 
-- The base is more than about a month old. Check with
-  `./manage-agent-vm.sh webapp status`.
+- The base is more than about a month old. `./manage-agent-vm.sh list` shows
+  the date it was frozen.
 - An agent needs a package that is not in the base.
 - An Omarchy release you want to test against has shipped.
 
@@ -1036,8 +1036,14 @@ than in a copy that a reset would throw away.
 ./manage-agent-vm.sh webapp status
 ```
 
-If it says `disabled`, set `SHARE_DIR` in `config/omavm.conf` and restart the
-guest. The device is only added to the domain when a share is configured, so
+If the `share` line says `none`, create the directory named after the VM and
+restart the guest:
+
+```bash
+mkdir -p ~/Projects/omavm-share/webapp
+```
+
+The device is only added to the domain when a share is configured, so
 this needs a stop and start rather than a mount command.
 
 **If it says enabled but the guest has nothing:**
@@ -1296,8 +1302,8 @@ The build command now does this for you, but older copies may still be affected.
 
 ## Disk is filling up
 
-**Trigger.** `/var/lib` is short of space, or `./manage-agent-vm.sh webapp status`
-shows a large overlay.
+**Trigger.** `/var/lib` is short of space, or `./manage-agent-vm.sh list` shows
+a large `disk` figure for a VM.
 
 **Why it happens.** The overlay accumulates every block the guest has written
 since the last reset. A long agent run that downloads a lot can grow it to many

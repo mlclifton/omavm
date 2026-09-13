@@ -20,7 +20,7 @@
 #   clip      Move the clipboard: `clip pull` guest to host, `clip push` back.
 #   paste     Type the host clipboard into the guest, key by key.
 #   sync-ui   Install the current omarchy-ui and skill into a running guest.
-#   status    Show what this VM is doing.
+#   status    State, address, sizing, share and disk usage for this VM.
 #
 # Base-image commands, accepted only for the reserved VM name `base`:
 #   init      Create the writable build disk.
@@ -31,7 +31,7 @@
 #   refresh   Boot a writable copy of the base so you can update it.
 #
 # Commands that act on the set rather than one member:
-#   list      Every VM, its address and what it is doing.
+#   list      The status of every VM at a glance. Never asks for a password.
 #   new       Create a VM as a fresh overlay of the shared base.
 #   rm        Destroy a VM and release its address.
 #   logs      Follow the proxy audit log (sandbox profile only).
@@ -909,32 +909,59 @@ cmd_sync_ui() {
     warn "This lasts until the next reset. Re-seal the base to make it permanent."
 }
 
-cmd_status() {
-    stage "Status of ${VM}"
-    printf '  %-20s %s\n' "profile" "$PROFILE"
+# How much a disk image actually occupies, without a password. du and stat
+# only need to enter the image directory, which is world-traversable, not read
+# the file, so this works whatever the file's owner and mode.
+disk_usage() {
+    [[ -e "$1" ]] || { echo "missing"; return; }
+    du -h "$1" 2>/dev/null | cut -f1 || echo "?"
+}
+
+# The status of the currently resolved VM, one field per line. Shared by status
+# and list so the two can never disagree. Nothing here may call sudo: list runs
+# it for every VM and must never stop to ask for a password.
+print_vm_status() {
     local dstate
     dstate=$($VIRSH domstate "$VM_DOMAIN" 2>/dev/null | head -1 || true)
-    printf '  %-20s %s\n' "domain" "${dstate:-undefined}"
-    printf '  %-20s %s on %s\n' "address" "$VM_IP" "$VM_NET"
+    printf '  %-12s %s\n' "state" "${dstate:-undefined}"
+    printf '  %-12s %s on %s\n' "address" "$VM_IP" "$VM_NET"
+    printf '  %-12s %s MB, %s vCPU\n' "sizing" "$VM_MEM_MB" "$VM_VCPUS"
     if [[ -n "$SHARE_DIR" ]]; then
-        printf '  %-20s %s -> %s%s\n' "file share" "$SHARE_DIR" "$SHARE_MOUNT" \
+        printf '  %-12s %s -> %s%s\n' "share" "$SHARE_DIR" "$SHARE_MOUNT" \
             "$([[ "$SHARE_READONLY" == "yes" ]] && echo ' (read-only)')"
     else
-        printf '  %-20s %s\n' "file share" "disabled"
+        printf '  %-12s %s\n' "share" "none"
     fi
-    printf '  %-20s %s MB, %s vCPU\n' "sizing" "$VM_MEM_MB" "$VM_VCPUS"
+    if [[ ! -e "$DISK_IMAGE" ]]; then
+        printf '  %-12s %s\n' "disk" "missing, run reset"
+    elif [[ "$VM" == "$BASE_VM" ]]; then
+        printf '  %-12s %s in %s\n' "disk" "$(disk_usage "$DISK_IMAGE")" "$(basename "$DISK_IMAGE")"
+    else
+        printf '  %-12s %s written since last reset\n' "disk" "$(disk_usage "$DISK_IMAGE")"
+    fi
+}
+
+# Settings that apply to every VM, printed once rather than per VM.
+print_shared_status() {
+    printf '  %-12s %s\n' "profile" "$PROFILE"
     if [[ "$GUEST_ISOLATION" == "yes" ]]; then
-        printf '  %-20s %s\n' "other VMs" "unreachable (GUEST_ISOLATION=yes)"
+        printf '  %-12s %s\n' "other VMs" "unreachable (GUEST_ISOLATION=yes)"
     else
-        printf '  %-20s %s\n' "other VMs" "reachable (GUEST_ISOLATION=no)"
+        printf '  %-12s %s\n' "other VMs" "reachable (GUEST_ISOLATION=no)"
     fi
-    if [[ -f "$DISK_IMAGE" ]]; then
-        printf '  %-20s %s at %s\n' "disk" \
-            "$(sudo du -h "$DISK_IMAGE" 2>/dev/null | cut -f1 2>/dev/null || echo '?')" \
-            "$(basename "$DISK_IMAGE")"
+    if [[ -e "$BASE_IMAGE" ]]; then
+        printf '  %-12s %s, frozen %s\n' "base image" "$(disk_usage "$BASE_IMAGE")" \
+            "$(stat -c %y "$BASE_IMAGE" 2>/dev/null | cut -d' ' -f1 || echo '?')"
     else
-        printf '  %-20s %s\n' "disk" "missing, run reset"
+        printf '  %-12s %s\n' "base image" "missing"
     fi
+}
+
+cmd_status() {
+    stage "Status of ${VM}"
+    print_vm_status
+    echo
+    print_shared_status
 }
 
 # --------------------------------------------------------------------------
@@ -1088,29 +1115,20 @@ cmd_list() {
         echo "  $0 ${BASE_VM} build --iso /path/to/omarchy.iso"
         return
     fi
-    printf '  %-20s %-16s %-12s %s\n' NAME ADDRESS STATE DISK
-    local name ip state disk
+
+    local name ip
     while IFS=$'\t' read -r name ip; do
-        # domstate writes a multi-line error for an undefined domain, which
-        # would break the table.
-        state=$($VIRSH domstate "omarchy-${name}" 2>/dev/null | head -1 || true)
-        [[ -n "$state" ]] || state="undefined"
-        if [[ "$name" == "$BASE_VM" ]]; then
-            disk="${IMAGE_DIR}/base-build.qcow2"
-        else
-            disk="${IMAGE_DIR}/${name}-overlay.qcow2"
+        printf '\n%s%s%s\n' "$c_bold" "$name" "$c_reset"
+        # A subshell per VM, so one VM's override file cannot leak its
+        # settings into the next, and a bad registry entry cannot stop the
+        # rest being listed.
+        if ! ( resolve_vm "$name" && print_vm_status ) 2>/dev/null; then
+            printf '  %-12s %s\n' "error" "could not resolve this entry; try: $0 ${name} status"
         fi
-        printf '  %-20s %-16s %-12s %s\n' "$name" "$ip" "$state" \
-            "$(sudo du -h "$disk" 2>/dev/null | cut -f1 2>/dev/null || echo '-')"
     done <<<"$rows"
-    echo
-    if [[ -f "$BASE_IMAGE" ]]; then
-        printf '  shared base: %s, sealed %s\n' \
-            "$(sudo du -h "$BASE_IMAGE" 2>/dev/null | cut -f1 2>/dev/null || echo '?')" \
-            "$(sudo stat -c %y "$BASE_IMAGE" 2>/dev/null | cut -d' ' -f1 2>/dev/null || echo '?')"
-    else
-        printf '  shared base: missing\n'
-    fi
+
+    printf '\n%sshared%s\n' "$c_bold" "$c_reset"
+    print_shared_status
 }
 
 cmd_rm() {
