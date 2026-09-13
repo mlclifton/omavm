@@ -46,7 +46,18 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Follow symlinks, so the tool still finds its config and templates when it is
+# run through the `omavm` link that install.sh puts on the PATH.
+REPO_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+# The name to show in hints and errors. When run as `omavm` from the PATH that
+# is what the user typed; otherwise show the path they used, so the hint can be
+# copied and run as it stands.
+if [[ "$(command -v "$(basename "$0")" 2>/dev/null)" -ef "$0" ]]; then
+    PROG="$(basename "$0")"
+else
+    PROG="$0"
+fi
 # shellcheck source=config/omavm.conf
 source "${REPO_DIR}/config/omavm.conf"
 
@@ -183,7 +194,7 @@ resolve_vm() {
             known=$(registry | cut -f1 | paste -sd', ' -)
             die "No VM named '${VM}'.
     Known VMs: ${known:-none}
-    Create one with:  $0 new ${VM}"
+    Create one with:  $PROG new ${VM}"
         fi
     fi
 
@@ -229,12 +240,12 @@ resolve_vm() {
 require_base_vm() {
     [[ "$VM" == "$BASE_VM" ]] || die "'$1' builds the shared base image, so it
     only accepts the reserved VM name '${BASE_VM}':
-        $0 ${BASE_VM} $1"
+        $PROG ${BASE_VM} $1"
 }
 
 refuse_base_vm() {
     [[ "$VM" != "$BASE_VM" ]] || die "'${BASE_VM}' is the build guest, not a
-    working VM. Use a VM created with '$0 new <name>'."
+    working VM. Use a VM created with '$PROG new <name>'."
 }
 
 # --------------------------------------------------------------------------
@@ -512,7 +523,7 @@ cmd_init() {
     stage "Creating the build disk"
     sudo qemu-img create -f qcow2 "$DISK_IMAGE" "$DISK_SIZE" >/dev/null
     ok "Created $DISK_IMAGE ($DISK_SIZE, thin provisioned)"
-    info "Next: $0 ${BASE_VM} build --iso /path/to/omarchy.iso"
+    info "Next: $PROG ${BASE_VM} build --iso /path/to/omarchy.iso"
 }
 
 cmd_build() {
@@ -526,7 +537,7 @@ cmd_build() {
     done
     [[ -f "$iso" ]] || die "ISO not found: $iso
     Download the Omarchy ISO from https://omarchy.org and pass --iso /path/to/it."
-    [[ -f "$DISK_IMAGE" ]] || die "No build disk. Run: $0 ${BASE_VM} init"
+    [[ -f "$DISK_IMAGE" ]] || die "No build disk. Run: $PROG ${BASE_VM} init"
 
     require_network "$VM_NET"
     stage "Preparing installer media"
@@ -545,7 +556,7 @@ cmd_build() {
     info "    If you use a different name, change GUEST_USER in config/omavm.conf."
     info "  * Leave disk encryption off, or you will type a passphrase at every boot."
     echo
-    info "When you reach the desktop, run: $0 ${BASE_VM} seal"
+    info "When you reach the desktop, run: $PROG ${BASE_VM} seal"
     cmd_gui
 }
 
@@ -562,7 +573,7 @@ cmd_rebuild() {
 
 cmd_seal() {
     require_base_vm seal
-    domain_running || die "The build guest is not running. Run '$0 ${BASE_VM} build' first."
+    domain_running || die "The build guest is not running. Run '$PROG ${BASE_VM} build' first."
     [[ "$PROFILE" != "sandbox" ]] \
         || die "Sealing needs internet. Run it with the workstation profile."
     [[ -f "${SSH_KEY}.pub" ]] || die "Missing ${SSH_KEY}.pub. Run install_host_deps.sh first."
@@ -571,8 +582,8 @@ cmd_seal() {
         seal_over_ssh
         echo
         info "Reboot so the session services start, then freeze:"
-        info "  $0 ${BASE_VM} reboot"
-        info "  $0 ${BASE_VM} stop && $0 ${BASE_VM} freeze"
+        info "  $PROG ${BASE_VM} reboot"
+        info "  $PROG ${BASE_VM} stop && $PROG ${BASE_VM} freeze"
         return
     fi
 
@@ -605,7 +616,7 @@ cmd_seal() {
     printf '    curl -sL %s:%s/s | sudo bash\n\n' "$HOST_IP" "$SEAL_HTTP_PORT"
     info "Or have the host type it for you, from another terminal:"
     printf '      %s %s paste --enter '"'"'curl -sL %s:%s/s | sudo bash'"'"'\n\n' \
-        "$0" "$VM" "$HOST_IP" "$SEAL_HTTP_PORT"
+        "$PROG" "$VM" "$HOST_IP" "$SEAL_HTTP_PORT"
 
     local reported
     reported=$(wait_for_guest_user "${serve_dir}/access.log" 900)
@@ -619,7 +630,7 @@ cmd_seal() {
 
     if wait_for_ssh 900; then
         ok "Guest sealed and reachable over SSH"
-        info "Next: $0 ${BASE_VM} reboot, then stop and freeze"
+        info "Next: $PROG ${BASE_VM} reboot, then stop and freeze"
     else
         die "Timed out waiting for SSH. Check the seal output in the guest."
     fi
@@ -627,7 +638,7 @@ cmd_seal() {
 
 cmd_freeze() {
     require_base_vm freeze
-    domain_running && die "Shut the build guest down first: $0 ${BASE_VM} stop"
+    domain_running && die "Shut the build guest down first: $PROG ${BASE_VM} stop"
     [[ -f "$DISK_IMAGE" ]] || die "No build disk at $DISK_IMAGE"
 
     stage "Freezing the build disk into the shared base image"
@@ -653,7 +664,7 @@ cmd_freeze() {
     unregister_vm "$VM"
     ok "Build guest removed, its address released"
     echo
-    info "Create a VM from the new base with:  $0 new <name>"
+    info "Create a VM from the new base with:  $PROG new <name>"
 }
 
 cmd_refresh() {
@@ -670,8 +681,8 @@ cmd_refresh() {
     define_domain
     $VIRSH start "$VM_DOMAIN" >/dev/null
     ok "Base running at ${VM_IP} with internet access"
-    info "Update it: $0 ${BASE_VM} ssh, then 'sudo pacman -Syu' and 'omarchy update'."
-    info "When done: $0 ${BASE_VM} stop, then $0 ${BASE_VM} freeze"
+    info "Update it: $PROG ${BASE_VM} ssh, then 'sudo pacman -Syu' and 'omarchy update'."
+    info "When done: $PROG ${BASE_VM} stop, then $PROG ${BASE_VM} freeze"
 }
 
 # --------------------------------------------------------------------------
@@ -680,7 +691,7 @@ cmd_refresh() {
 cmd_reset() {
     refuse_base_vm
     [[ -f "$BASE_IMAGE" ]] || die "No base image at $BASE_IMAGE.
-    Build one first:  $0 ${BASE_VM} build --iso /path/to/omarchy.iso"
+    Build one first:  $PROG ${BASE_VM} build --iso /path/to/omarchy.iso"
 
     stage "Resetting ${VM} to the shared base image"
     if domain_running; then
@@ -701,7 +712,7 @@ cmd_reset() {
     ok "UEFI variables restored from the firmware template"
 
     define_domain
-    info "Start it with: $0 ${VM} start --gui"
+    info "Start it with: $PROG ${VM} start --gui"
 }
 
 cmd_start() {
@@ -715,7 +726,7 @@ cmd_start() {
         shift
     done
 
-    [[ -f "$DISK_IMAGE" ]] || die "No disk for ${VM}. Run: $0 ${VM} reset"
+    [[ -f "$DISK_IMAGE" ]] || die "No disk for ${VM}. Run: $PROG ${VM} reset"
     stage "Starting ${VM}"
     require_network "$VM_NET"
     start_proxy
@@ -728,7 +739,7 @@ cmd_start() {
         ok "Started at ${VM_IP} on ${VM_NET} (profile: ${PROFILE})"
     fi
     (( attach )) && cmd_gui
-    info "SSH in with: $0 ${VM} ssh"
+    info "SSH in with: $PROG ${VM} ssh"
 }
 
 cmd_stop() {
@@ -775,7 +786,7 @@ cmd_gui() {
 }
 
 cmd_ssh() {
-    domain_running || die "${VM} is not running. Run: $0 ${VM} start"
+    domain_running || die "${VM} is not running. Run: $PROG ${VM} start"
     [[ "${1:-}" == "--" ]] && shift
     # Allocate a terminal only when stdout is one. Without it sudo in the guest
     # has nowhere to prompt; with it unconditionally, a piped command such as
@@ -846,7 +857,7 @@ cmd_watch() {
             fi
         else
             printf '\r  %s  no frame. Check: %s %s ssh -- omarchy-ui doctor  ' \
-                "$(date +%H:%M:%S)" "$0" "$VM"
+                "$(date +%H:%M:%S)" "$PROG" "$VM"
         fi
         sleep "$interval"
     done
@@ -855,7 +866,7 @@ cmd_watch() {
 cmd_screenshot() {
     domain_running || die "${VM} is not running."
     local out="${1:-${VM}-$(date +%Y%m%d-%H%M%S).png}"
-    guest_frame > "$out" || die "Capture failed. Check: $0 ${VM} ssh -- omarchy-ui doctor"
+    guest_frame > "$out" || die "Capture failed. Check: $PROG ${VM} ssh -- omarchy-ui doctor"
     [[ -s "$out" ]] || { rm -f "$out"; die "Capture produced an empty file."; }
     ok "Wrote $out ($(du -h "$out" | cut -f1))"
 }
@@ -881,7 +892,7 @@ cmd_clip() {
                 || die "Could not set the guest clipboard."
             ok "Host clipboard copied to ${VM}"
             ;;
-        *) die "usage: $0 ${VM} clip [pull|push]" ;;
+        *) die "usage: $PROG ${VM} clip [pull|push]" ;;
     esac
 }
 
@@ -1080,14 +1091,14 @@ cmd_paste() {
 # --------------------------------------------------------------------------
 cmd_new() {
     local name="${1:-}"
-    [[ -n "$name" ]] || die "usage: $0 new <name>"
+    [[ -n "$name" ]] || die "usage: $PROG new <name>"
     validate_vm_name "$name"
     [[ "$name" != "$BASE_VM" ]] \
         || die "'${BASE_VM}' is reserved for the build guest. Create it with:
-        $0 ${BASE_VM} init"
+        $PROG ${BASE_VM} init"
     vm_registered "$name" && die "A VM named '${name}' already exists."
     [[ -f "$BASE_IMAGE" ]] || die "No base image at $BASE_IMAGE.
-    Build one first:  $0 ${BASE_VM} build --iso /path/to/omarchy.iso"
+    Build one first:  $PROG ${BASE_VM} build --iso /path/to/omarchy.iso"
 
     require_network "$VM_NET"
     stage "Creating ${name}"
@@ -1101,7 +1112,7 @@ cmd_new() {
     define_domain
     ok "Overlay created over the shared base"
     echo
-    info "Start it with:  $0 ${name} start"
+    info "Start it with:  $PROG ${name} start"
     [[ -n "$SHARE_ROOT" ]] && info "Share files by creating: ${SHARE_ROOT}/${name}"
 }
 
@@ -1111,8 +1122,8 @@ cmd_list() {
     rows=$(registry)
     if [[ -z "$rows" ]]; then
         echo "No VMs yet. Build the base, then create one:"
-        echo "  $0 ${BASE_VM} init"
-        echo "  $0 ${BASE_VM} build --iso /path/to/omarchy.iso"
+        echo "  $PROG ${BASE_VM} init"
+        echo "  $PROG ${BASE_VM} build --iso /path/to/omarchy.iso"
         return
     fi
 
@@ -1123,7 +1134,7 @@ cmd_list() {
         # settings into the next, and a bad registry entry cannot stop the
         # rest being listed.
         if ! ( resolve_vm "$name" && print_vm_status ) 2>/dev/null; then
-            printf '  %-12s %s\n' "error" "could not resolve this entry; try: $0 ${name} status"
+            printf '  %-12s %s\n' "error" "could not resolve this entry; try: $PROG ${name} status"
         fi
     done <<<"$rows"
 
@@ -1133,7 +1144,7 @@ cmd_list() {
 
 cmd_rm() {
     local name="${1:-}"
-    [[ -n "$name" ]] || die "usage: $0 rm <name>"
+    [[ -n "$name" ]] || die "usage: $PROG rm <name>"
     validate_vm_name "$name"
     vm_registered "$name" || die "No VM named '${name}'."
 
@@ -1159,7 +1170,15 @@ cmd_logs() {
 }
 
 usage() {
-    awk 'NR>=3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+    # The help is written in terms of the script's own name. Show the name the
+    # user actually typed, so `omavm --help` does not tell them to run a file
+    # they never typed.
+    # Replace the whole invocation, not just the name: from the PATH the tool
+    # is `omavm`, and `./omavm` would point at a file in the current directory.
+    local shown="$PROG"
+    awk 'NR>=3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}" \
+        | sed -e "s|\./manage-agent-vm\.sh|${shown}|g" \
+              -e "s|manage-agent-vm\.sh|$(basename "$PROG")|g"
 }
 
 # --------------------------------------------------------------------------
@@ -1192,7 +1211,7 @@ main() {
             ;;
         *)
             die "Unknown command '${cmd}' for VM '${vm}'.
-    Run '$0 --help' for the list."
+    Run '$PROG --help' for the list."
             ;;
     esac
 }

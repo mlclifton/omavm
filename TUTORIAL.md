@@ -5,7 +5,9 @@ Work through it in order and you will have driven a full Omarchy desktop from
 your host terminal, without a viewer window and without touching the guest's
 mouse or keyboard yourself.
 
-All of it runs from the host, in `~/Projects/omavm`.
+All of it runs from the host, in `~/Projects/omavm`. If you have run
+`./install.sh`, type `omavm` wherever this says `./manage-agent-vm.sh`, from any
+directory.
 
 ## Before you start
 

@@ -197,6 +197,7 @@ describes the workstation profile.
 
 | Path | What it is |
 |---|---|
+| `install.sh` | Puts `omavm` on your PATH, and `remove` takes omavm off the host. |
 | `install_host_deps.sh` | One-time host provisioning. Idempotent, has `--dry-run`. |
 | `manage-agent-vm.sh` | The lifecycle command you use every day. |
 | `verify-isolation.sh` | Asserts containment. Sandbox profile only. |
@@ -212,6 +213,40 @@ describes the workstation profile.
 | `OPERATIONS.md` | Every recurring manual task, with its trigger. |
 
 ---
+
+## Step 0 — put `omavm` on your PATH
+
+```bash
+cd ~/Projects/omavm
+./install.sh
+```
+
+That links `~/.local/bin/omavm` to `manage-agent-vm.sh` in this repository, so
+from then on `omavm webapp start` does the same as
+`./manage-agent-vm.sh webapp start`, from any directory. It is a link, not a
+copy, so pulling new commits updates the command too. Nothing here needs a
+password.
+
+Use `--bin-dir DIR` to link somewhere else, and `--with-host` to run step 1 as
+part of it. The examples in this documentation spell out `./manage-agent-vm.sh`
+so they work before you install; after installing, type `omavm` instead.
+
+To take omavm off the host again:
+
+```bash
+./install.sh remove --dry-run    # see exactly what it would remove
+./install.sh remove              # the command, proxy, firewall rules, networks
+./install.sh remove --purge      # also every VM, the images and the SSH key
+```
+
+`remove` refuses while VMs still exist, unless you pass `--purge`, because
+deleting the networks under them would break them. It deliberately leaves the
+packages, your `libvirt` group membership and your share folders, since those
+may be used by other things or hold your own files.
+
+It is `./install.sh remove` rather than `omavm remove` on purpose. `omavm rm`
+already deletes a single VM, and the command that deletes everything should not
+be one letter away from it.
 
 ## Step 1 — provision the host
 

@@ -16,6 +16,7 @@ below simply does not arise.
 | You want an agent to use a new API without holding its key | [Add a gateway route](#add-a-gateway-route-for-a-new-api) | Sandbox only |
 | Base image is more than a month old, or lacks a package you need | [Refresh the base](#the-base-image-is-stale) | Monthly |
 | You need a VM for a new project, or want one gone | [Add or remove a VM](#adding-and-removing-vms) | As projects come and go |
+| You want omavm off this host entirely | [Remove omavm](#removing-omavm-from-the-host) | Once |
 | VMs should or should not reach each other | [Change guest isolation](#changing-whether-vms-can-reach-each-other) | When project needs change |
 | `pacman -Syu` touched mesa, the kernel, libvirt, qemu or ufw | [Re-verify isolation](#after-a-host-system-update) | Every host update |
 | `verify-isolation.sh` exits non-zero | [Triage a failed verification](#isolation-verification-failed) | Sandbox only |
@@ -155,6 +156,65 @@ sudo journalctl -u omavm-agent-proxy -n 5 | grep 'gateway routes'
 A route whose environment variable is unset is **disabled and logged at
 startup** rather than forwarded without authentication. If your route count is
 lower than you expect, that is why.
+
+---
+
+## Removing omavm from the host
+
+**Trigger.** You are finished with omavm on this machine, or want to reinstall
+it from clean.
+
+**Steps.** Look first. The dry run lists every step and asks for no password:
+
+```bash
+./install.sh remove --dry-run
+```
+
+If VMs still exist it stops and names them. Delete the ones you are done with,
+or remove everything at once:
+
+```bash
+omavm webapp stop && omavm rm webapp     # one at a time
+./install.sh remove --purge              # every VM, images and the SSH key too
+```
+
+Then run it for real. It asks once before changing anything:
+
+```bash
+./install.sh remove
+```
+
+**What it removes.** The `omavm` link, the egress proxy service with its user,
+configuration and logs, every ufw rule whose comment starts with `omavm`, and
+the `agent-net` and `agent-sandbox-net` networks. With `--purge`, also every
+VM, the image directory and the SSH keypair.
+
+**Read before running.** `/etc/omavm/credentials.env` is deleted, and it may be
+the only copy of an API key. Keep a copy if you need it.
+
+**What it leaves, on purpose.**
+
+| Left in place | Why |
+|---|---|
+| libvirt, QEMU and the other packages | Other things on this host may use them |
+| Your `libvirt` group membership | virt-manager and any other VMs rely on it |
+| Share folders under `~/Projects/omavm-share` | They hold your files |
+| This repository | You cloned it |
+
+To remove the packages too, and only if nothing else uses them:
+
+```bash
+sudo pacman -Rns libvirt qemu-desktop virt-manager virt-viewer
+```
+
+**Confirm.**
+
+```bash
+command -v omavm || echo "command gone"
+virsh --connect qemu:///system net-list --all
+```
+
+`agent-net` and `agent-sandbox-net` should not be listed.
 
 ---
 
