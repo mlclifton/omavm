@@ -37,7 +37,7 @@ below simply does not arise.
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
 | Clicks land in the wrong place | [Recalibrate the pointer](#clicks-land-in-the-wrong-place) | After a display change |
 | You changed the agent skill or `omarchy-ui` | [Push the change into the guest](#updating-the-agent-skill) | Whenever you edit it |
-| The file share is missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
+| `~agent/Project` is empty or missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
 | Guest has no IP address at all | [Diagnose a missing lease](#the-guest-never-gets-an-ip-address) | Rare |
 | The installer offers no way to skip encryption | [Press Ctrl+C to toggle it](#the-installer-shows-no-encryption-option) | Every base build |
@@ -1149,38 +1149,69 @@ than in a copy that a reset would throw away.
 
 ## The file share is not mounted
 
-**Trigger.** `/mnt/omavm` is empty in the guest, or the mount is missing.
+**Trigger.** `~agent/Project` is empty in the guest, or files you put in the
+VM's host folder do not appear there.
 
-**First, is a share configured at all?** It is off by default:
+**First, is a folder attached at all?**
 
 ```bash
 ./manage-agent-vm.sh webapp status
 ```
 
-If the `share` line says `none`, create the directory named after the VM and
-restart the guest:
+If the `share` line says `none`, there is no folder for this VM. Create it, then
+stop and start the VM:
 
 ```bash
 mkdir -p ~/Projects/omavm-share/webapp
+./manage-agent-vm.sh webapp stop && ./manage-agent-vm.sh webapp start
 ```
 
-The device is only added to the domain when a share is configured, so
-this needs a stop and start rather than a mount command.
+A reboot is not enough. The folder is a device on the VM, and a reboot keeps the
+devices the VM already had.
 
-**If it says enabled but the guest has nothing:**
+**If a folder is attached but `~agent/Project` is empty**, check where the guest
+mounted it:
 
 ```bash
-./manage-agent-vm.sh webapp ssh -- 'mount | grep virtiofs; sudo mount -a'
+./manage-agent-vm.sh webapp ssh -- findmnt -t virtiofs
 ```
 
-The fstab entry uses `nofail`, deliberately, so the guest still boots when the
-share is absent. That means a failed mount is quiet rather than fatal, and you
-have to look for it.
+A mount at `/mnt/omavm` means the base was sealed before shares moved into the
+home directory. Your files are there. Move the mount for this VM:
 
-**Two things that will not work.** The share is ignored entirely in the sandbox
-profile, where a shared filesystem would bypass the network controls. And
-changing `SHARE_READONLY` requires a restart, because it is a property of the
-device rather than of the mount.
+```bash
+./manage-agent-vm.sh webapp sync-share
+```
+
+That lasts until the next reset. Re-seal the base to make it permanent for every
+VM.
+
+**If nothing is mounted anywhere**, mount it by hand to see the real error. The
+fstab entry uses `nofail`, on purpose, so the guest still boots without a
+folder, and that also means a failed mount at boot says nothing:
+
+```bash
+./manage-agent-vm.sh webapp ssh -- 'sudo mount ~/Project'
+```
+
+**If files show the wrong owner inside the guest**, the user IDs differ.
+virtiofs passes numeric IDs straight through, so the guest shows whichever
+account has the host folder owner's UID:
+
+```bash
+stat -c '%u' ~/Projects/omavm-share/webapp
+./manage-agent-vm.sh webapp ssh -- id -u
+```
+
+The two numbers must match. They normally both read 1000, because each account
+is the first on its machine. If they do not, the cleanest fix is to give the
+guest account the host's UID in the base image, then re-seal.
+
+**Three things that will not work.** The sandbox profile never shares a folder,
+even if an override file sets one. A `SHARE_DIR` that points at a missing
+directory is ignored with a warning rather than attached. And changing
+`SHARE_READONLY` needs a stop and start, because it is a property of the device
+rather than of the mount.
 
 ---
 

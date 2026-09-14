@@ -150,7 +150,7 @@ webapp
   state        running
   address      192.168.100.10 on agent-net
   sizing       6144 MB, 4 vCPU
-  share        /home/mike/Projects/omavm-share/webapp -> /mnt/omavm
+  share        /home/mike/Projects/omavm-share/webapp -> ~agent/Project
   disk         1.2G written since last reset
 
 api
@@ -453,28 +453,60 @@ fresh one, and restores the UEFI variables file. NVRAM lives outside the disk
 image, so a reset that only replaced the qcow2 would leave firmware state
 behind. It takes about as long as creating a small file.
 
-## Sharing files with the guest
+## Sharing a project folder with a VM
 
-Off by default. There is no share device at all unless you configure one.
+Each VM can have a folder on the host that appears inside it at
+`~agent/Project`, owned by `agent`. The folder lives on the host, so it
+**survives `reset`**. The VM's own disk goes back to the base image, while
+everything in `Project` stays. That makes it the place for work you want to
+keep, while the rest of the VM stays disposable.
+
+It is off until you create the folder, named after the VM:
 
 ```bash
-mkdir -p ~/Projects/omavm-share
+mkdir -p ~/Projects/omavm-share/webapp
+./manage-agent-vm.sh webapp stop && ./manage-agent-vm.sh webapp start
+./manage-agent-vm.sh webapp ssh -- ls -la Project
 ```
 
-Then set `SHARE_DIR="${HOME}/Projects/omavm-share"` in `config/omavm.conf`, or
-for one session:
+**Stop and start, not reboot.** The folder is attached as a device on the VM.
+A reboot keeps the VM's existing devices, so a newly created folder only
+appears after a full stop and start.
+
+**Ownership follows the numeric user ID.** What `agent` writes in the guest is
+owned by you on the host, and what you write on the host is owned by `agent` in
+the guest. That relies on both accounts having the same UID. It is the normal
+case, because each is the first account on its machine, UID 1000, but
+`./manage-agent-vm.sh webapp sync-share` checks and warns if they differ.
+
+**To share an existing project directory** instead of one under
+`omavm-share`, point that VM at it in its override file:
 
 ```bash
-OMAVM_SHARE_DIR=~/Projects/omavm-share ./manage-agent-vm.sh webapp start
+# config/vm/webapp.conf
+SHARE_DIR="${HOME}/Projects/myapp"
 ```
 
-It appears in the guest at `/mnt/omavm` over virtiofs. `SHARE_READONLY="yes"`
-makes it read-only from the guest side.
+`SHARE_READONLY="yes"` in `config/omavm.conf` makes shares read-only from the
+guest side. Share a directory made for the purpose, never your whole home: the
+guest can write to anything in it.
 
-Share a purpose-made directory, not your home. The guest writes into it as the
-guest user, and everything in it is reachable by whatever runs in there. The
-share is ignored entirely in the sandbox profile, where a shared filesystem
-would bypass the network controls.
+The sandbox profile never shares a folder, whatever a VM's override file says.
+A shared folder is a direct channel between host and guest that sidesteps every
+network control.
+
+**Where it mounts is part of the base image.** A base sealed before shares
+moved to `~agent/Project` mounts them at `/mnt/omavm` instead. To move a running
+VM over without resetting it:
+
+```bash
+./manage-agent-vm.sh webapp sync-share
+```
+
+It asks for `agent`'s sudo password, then updates the mount and moves the share
+straight away. That lasts until the VM's next reset. To make it permanent for
+every VM, re-seal the base: `base refresh`, `base seal`, `base stop` and
+`base freeze`.
 
 ## Reference
 

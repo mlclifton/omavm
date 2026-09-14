@@ -26,7 +26,7 @@ SANDBOX_PREFIX="@SANDBOX_SUBNET_PREFIX@"
 PROXY_PORT="@PROXY_PORT@"
 GATEWAY_PORT="@GATEWAY_PORT@"
 SHARE_TAG="@SHARE_TAG@"
-SHARE_MOUNT="@SHARE_MOUNT@"
+SHARE_MOUNT_NAME="@SHARE_MOUNT_NAME@"
 WORKSTATION_SUBNET="@WORKSTATION_SUBNET@"
 SANDBOX_SUBNET="@SANDBOX_SUBNET@"
 SEAL_URL="@SEAL_URL@"
@@ -223,14 +223,43 @@ fi
 
 # --------------------------------------------------------------------------
 step "Configuring the host file share"
-# nofail matters: the share is optional and absent in the sandbox profile, so
-# without it the guest would drop to an emergency shell when it is not there.
-install -d -m 0755 "$SHARE_MOUNT"
-if ! grep -q "^${SHARE_TAG}[[:space:]]" /etc/fstab; then
-    printf '%s %s virtiofs defaults,nofail,x-systemd.device-timeout=5s 0 0\n' \
-        "$SHARE_TAG" "$SHARE_MOUNT" >> /etc/fstab
-fi
 
+# >>> share-mount
+# Mount the VM's shared folder, when the host has attached one, at
+# ~<account>/<SHARE_MOUNT_NAME>, owned by the guest account.
+#
+# `omavm <vm> sync-share` extracts exactly this block and runs it in a running
+# guest, so keep it self-contained. It may rely only on SHARE_TAG,
+# SHARE_MOUNT_NAME, GUEST_USER and HOME_DIR, and on no functions defined above.
+#
+# nofail matters: a share exists only when the host has a folder for this VM,
+# and never in the sandbox profile. Without nofail the guest would drop to an
+# emergency shell whenever the folder is absent.
+SHARE_MOUNT="${HOME_DIR}/${SHARE_MOUNT_NAME}"
+
+# The empty mount point is owned by the account too, so it is usable as a
+# normal directory when no folder is attached. Once mounted, virtiofs shows
+# the host folder's own owner by numeric ID.
+install -d -m 0755 -o "$GUEST_USER" -g "$GUEST_USER" "$SHARE_MOUNT"
+
+# Replace any earlier line for this tag, including /mnt/omavm, where shares were
+# mounted before they moved into the home directory.
+if grep -qE "^${SHARE_TAG}[[:space:]]" /etc/fstab; then
+    old_share_mount=$(awk -v t="$SHARE_TAG" '$1 == t {print $2; exit}' /etc/fstab)
+    sed -i "/^${SHARE_TAG}[[:space:]]/d" /etc/fstab
+    if [[ -n "$old_share_mount" && "$old_share_mount" != "$SHARE_MOUNT" ]]; then
+        umount "$old_share_mount" 2>/dev/null || true
+        rmdir "$old_share_mount" 2>/dev/null || true
+    fi
+fi
+printf '%s %s virtiofs defaults,nofail,x-systemd.device-timeout=5s 0 0\n' \
+    "$SHARE_TAG" "$SHARE_MOUNT" >> /etc/fstab
+systemctl daemon-reload 2>/dev/null || true
+
+# Mount straight away if the device is attached, so a running guest does not
+# need a reboot. Fails quietly when no folder is attached, which is normal.
+mountpoint -q "$SHARE_MOUNT" || mount "$SHARE_MOUNT" 2>/dev/null || true
+# <<< share-mount
 # --------------------------------------------------------------------------
 step "Pinning the DHCP client identifier to the interface MAC"
 # Without this the client id is derived from other state and dnsmasq may not

@@ -20,6 +20,7 @@
 #   clip      Move the clipboard: `clip pull` guest to host, `clip push` back.
 #   paste     Type the host clipboard into the guest, key by key.
 #   sync-ui   Install the current omarchy-ui and skill into a running guest.
+#   sync-share  Mount this VM's shared folder at ~<account>/Project in a running guest.
 #   status    State, address, sizing, share and disk usage for this VM.
 #
 # Base-image commands, accepted only for the reserved VM name `base`:
@@ -62,6 +63,10 @@ else
 fi
 # shellcheck source=config/omavm.conf
 source "${REPO_DIR}/config/omavm.conf"
+
+# How the share's location inside the guest is shown. The guest works out the
+# real path from the account's home directory.
+SHARE_MOUNT="~${GUEST_USER}/${SHARE_MOUNT_NAME}"
 
 TEMPLATE="${REPO_DIR}/libvirt/omarchy-agent.xml.in"
 SEAL_SRC="${REPO_DIR}/guest/seal-guest.sh"
@@ -235,6 +240,23 @@ resolve_vm() {
             warn "Ignoring GUEST_ISOLATION in config/vm/${VM}.conf; it is network-wide."
             GUEST_ISOLATION="$isolation"
         fi
+    fi
+
+    # These checks run after the override, because an override can set
+    # SHARE_DIR and would otherwise slip past the checks made above.
+    #
+    # The sandbox profile never shares a folder. A share is a host-to-guest
+    # channel that bypasses every network control.
+    if [[ "$PROFILE" == "sandbox" && -n "$SHARE_DIR" ]]; then
+        warn "Ignoring the shared folder for ${VM}: the sandbox profile never shares folders."
+        SHARE_DIR=""
+    fi
+    # A share naming a missing directory makes the VM fail to start with a
+    # libvirt error that never mentions the setting. Drop it and say why, rather
+    # than stopping, so status and rm still work for this VM.
+    if [[ -n "$SHARE_DIR" && ! -d "$SHARE_DIR" ]]; then
+        warn "Not sharing ${SHARE_DIR} with ${VM}: that directory does not exist."
+        SHARE_DIR=""
     fi
     return 0
 }
@@ -475,7 +497,7 @@ render_seal() {
         -e "s|@PROXY_PORT@|${PROXY_PORT}|g" \
         -e "s|@GATEWAY_PORT@|${GATEWAY_PORT}|g" \
         -e "s|@SHARE_TAG@|${SHARE_TAG}|g" \
-        -e "s|@SHARE_MOUNT@|${SHARE_MOUNT}|g" \
+        -e "s|@SHARE_MOUNT_NAME@|${SHARE_MOUNT_NAME}|g" \
         -e "s|@WORKSTATION_SUBNET@|${WORKSTATION_SUBNET}|g" \
         -e "s|@SANDBOX_SUBNET@|${SANDBOX_SUBNET}|g" \
         -e "s|@SEAL_URL@|${url}|g" \
@@ -970,6 +992,64 @@ print_shared_status() {
     fi
 }
 
+cmd_sync_share() {
+    domain_running || die "${VM} is not running."
+    [[ "$PROFILE" != "sandbox" ]] || die "The sandbox profile never shares folders."
+    guest_exec true 2>/dev/null || die "${VM} is not reachable over SSH."
+
+    # The guest side is the share-mount block from the seal script, used as it
+    # stands, so a running VM is set up exactly as a freshly sealed one would be.
+    local block
+    block=$(sed -n '/^# >>> share-mount$/,/^# <<< share-mount$/p' "$SEAL_SRC")
+    [[ -n "$block" ]] || die "No share-mount block found in ${SEAL_SRC}."
+
+    local work
+    work=$(mktemp -d)
+    trap 'rm -rf "$work"' RETURN
+    {
+        echo '#!/usr/bin/env bash'
+        echo 'set -uo pipefail'
+        printf 'SHARE_TAG=%q\nSHARE_MOUNT_NAME=%q\nGUEST_USER=%q\n' \
+            "$SHARE_TAG" "$SHARE_MOUNT_NAME" "$GUEST_USER"
+        echo 'HOME_DIR=$(getent passwd "$GUEST_USER" | cut -d: -f6)'
+        echo '[[ -d "$HOME_DIR" ]] || { echo "No home directory for $GUEST_USER" >&2; exit 1; }'
+        printf '%s\n' "$block"
+        echo 'if mountpoint -q "$SHARE_MOUNT"; then'
+        echo '    echo "  mounted at $SHARE_MOUNT"'
+        echo 'else'
+        echo '    echo "  set up at $SHARE_MOUNT, not mounted: no folder is attached to this VM"'
+        echo 'fi'
+    } > "${work}/share.sh"
+
+    stage "Setting up the shared folder in ${VM}"
+    scp -q -i "$SSH_KEY" $SSH_OPTS "${work}/share.sh" "${GUEST_USER}@${VM_IP}:/tmp/omavm-share.sh" \
+        || die "Could not copy the setup script into ${VM}."
+    info "The guest will ask for the sudo password for ${GUEST_USER}."
+    ssh -t -i "$SSH_KEY" $SSH_OPTS "${GUEST_USER}@${VM_IP}" \
+        "sudo bash /tmp/omavm-share.sh; rm -f /tmp/omavm-share.sh" \
+        || die "Setup in ${VM} failed."
+
+    if [[ -z "$SHARE_DIR" ]]; then
+        warn "No host folder is attached to ${VM}, so there is nothing to mount yet."
+        info "Create one, then stop and start the VM. A reboot is not enough:"
+        info "    mkdir -p ${SHARE_ROOT}/${VM}"
+        info "    $PROG ${VM} stop && $PROG ${VM} start"
+    else
+        # virtiofs passes numeric IDs straight through, so the folder only
+        # appears to belong to the guest account when the two IDs agree.
+        local host_uid guest_uid
+        host_uid=$(stat -c %u "$SHARE_DIR")
+        guest_uid=$(guest_exec "id -u ${GUEST_USER}" 2>/dev/null || true)
+        if [[ -n "$guest_uid" && "$host_uid" != "$guest_uid" ]]; then
+            warn "${SHARE_DIR} is owned by UID ${host_uid}, but ${GUEST_USER} in ${VM} is UID ${guest_uid}."
+            info "Files will appear owned by someone else inside the guest. See OPERATIONS.md."
+        else
+            ok "Ownership lines up: UID ${host_uid} on both sides"
+        fi
+    fi
+    warn "This lasts until the next reset. Re-seal the base to make it permanent."
+}
+
 cmd_status() {
     stage "Status of ${VM}"
     print_vm_status
@@ -1291,6 +1371,10 @@ main() {
         sync-ui)
             resolve_vm "$vm"
             cmd_sync_ui "$@"
+            ;;
+        sync-share)
+            resolve_vm "$vm"
+            cmd_sync_share "$@"
             ;;
         *)
             die "Unknown command '${cmd}' for VM '${vm}'.
