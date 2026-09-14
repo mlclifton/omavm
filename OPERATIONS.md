@@ -37,7 +37,7 @@ below simply does not arise.
 | The agent cannot click or type in the guest | [Repair the input path](#the-agent-cannot-click-or-type) | Rare |
 | Clicks land in the wrong place | [Recalibrate the pointer](#clicks-land-in-the-wrong-place) | After a display change |
 | You changed the agent skill or `omarchy-ui` | [Push the change into the guest](#updating-the-agent-skill) | Whenever you edit it |
-| `~agent/Project` is empty or missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
+| `~agent/Projects` is empty or missing in the guest | [Fix the share](#the-file-share-is-not-mounted) | Rare |
 | Guest is unreachable at its usual address | [Fix DHCP addressing](#the-guest-got-the-wrong-address) | Rare |
 | Guest has no IP address at all | [Diagnose a missing lease](#the-guest-never-gets-an-ip-address) | Rare |
 | The installer offers no way to skip encryption | [Press Ctrl+C to toggle it](#the-installer-shows-no-encryption-option) | Every base build |
@@ -1149,7 +1149,7 @@ than in a copy that a reset would throw away.
 
 ## The file share is not mounted
 
-**Trigger.** `~agent/Project` is empty in the guest, or files you put in the
+**Trigger.** `~agent/Projects` is empty in the guest, or files you put in the
 VM's host folder do not appear there.
 
 **First, is a folder attached at all?**
@@ -1169,7 +1169,7 @@ mkdir -p ~/Projects/omavm-share/webapp
 A reboot is not enough. The folder is a device on the VM, and a reboot keeps the
 devices the VM already had.
 
-**If a folder is attached but `~agent/Project` is empty**, check where the guest
+**If a folder is attached but `~agent/Projects` is empty**, check where the guest
 mounted it:
 
 ```bash
@@ -1186,12 +1186,28 @@ home directory. Your files are there. Move the mount for this VM:
 That lasts until the next reset. Re-seal the base to make it permanent for every
 VM.
 
+**If `sync-share` says it is not mounting over a directory that contains
+files**, `~agent/Projects` already held files in the guest. Mounting over them
+would hide them, so it stops instead. Move them out, then run it again:
+
+```bash
+./manage-agent-vm.sh webapp ssh -- 'mkdir -p ~/old-projects && mv ~/Projects/* ~/old-projects/'
+./manage-agent-vm.sh webapp sync-share
+```
+
+Or leave them and choose another name with `SHARE_MOUNT_NAME` in
+`config/omavm.conf`.
+
+**If the share is still at `~agent/Project`**, the VM was set up before the
+default name changed to `Projects`. Your files are safe on the host. Run
+`sync-share` once and it moves the mount.
+
 **If nothing is mounted anywhere**, mount it by hand to see the real error. The
 fstab entry uses `nofail`, on purpose, so the guest still boots without a
 folder, and that also means a failed mount at boot says nothing:
 
 ```bash
-./manage-agent-vm.sh webapp ssh -- 'sudo mount ~/Project'
+./manage-agent-vm.sh webapp ssh -- 'sudo mount ~/Projects'
 ```
 
 **If files show the wrong owner inside the guest**, the user IDs differ.

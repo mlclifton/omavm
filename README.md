@@ -150,7 +150,7 @@ webapp
   state        running
   address      192.168.100.10 on agent-net
   sizing       6144 MB, 4 vCPU
-  share        /home/mike/Projects/omavm-share/webapp -> ~agent/Project
+  share        /home/mike/Projects/omavm-share/webapp -> ~agent/Projects
   disk         1.2G written since last reset
 
 api
@@ -456,9 +456,9 @@ behind. It takes about as long as creating a small file.
 ## Sharing a project folder with a VM
 
 Each VM can have a folder on the host that appears inside it at
-`~agent/Project`, owned by `agent`. The folder lives on the host, so it
+`~agent/Projects`, owned by `agent`. The folder lives on the host, so it
 **survives `reset`**. The VM's own disk goes back to the base image, while
-everything in `Project` stays. That makes it the place for work you want to
+everything in `Projects` stays. That makes it the place for work you want to
 keep, while the rest of the VM stays disposable.
 
 It is off until you create the folder, named after the VM:
@@ -466,8 +466,12 @@ It is off until you create the folder, named after the VM:
 ```bash
 mkdir -p ~/Projects/omavm-share/webapp
 ./manage-agent-vm.sh webapp stop && ./manage-agent-vm.sh webapp start
-./manage-agent-vm.sh webapp ssh -- ls -la Project
+./manage-agent-vm.sh webapp ssh -- ls -la Projects
 ```
+
+**It never mounts over files already there.** If `~agent/Projects` already
+holds files in the guest, the mount is skipped with a message rather than
+hiding them. Move them out, or pick another name with `SHARE_MOUNT_NAME`.
 
 **Stop and start, not reboot.** The folder is attached as a device on the VM.
 A reboot keeps the VM's existing devices, so a newly created folder only
@@ -496,7 +500,7 @@ A shared folder is a direct channel between host and guest that sidesteps every
 network control.
 
 **Where it mounts is part of the base image.** A base sealed before shares
-moved to `~agent/Project` mounts them at `/mnt/omavm` instead. To move a running
+moved to `~agent/Projects` mounts them at `/mnt/omavm` instead. To move a running
 VM over without resetting it:
 
 ```bash

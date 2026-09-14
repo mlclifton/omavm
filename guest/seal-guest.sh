@@ -237,28 +237,42 @@ step "Configuring the host file share"
 # emergency shell whenever the folder is absent.
 SHARE_MOUNT="${HOME_DIR}/${SHARE_MOUNT_NAME}"
 
-# The empty mount point is owned by the account too, so it is usable as a
-# normal directory when no folder is attached. Once mounted, virtiofs shows
-# the host folder's own owner by numeric ID.
-install -d -m 0755 -o "$GUEST_USER" -g "$GUEST_USER" "$SHARE_MOUNT"
-
-# Replace any earlier line for this tag, including /mnt/omavm, where shares were
-# mounted before they moved into the home directory.
-if grep -qE "^${SHARE_TAG}[[:space:]]" /etc/fstab; then
-    old_share_mount=$(awk -v t="$SHARE_TAG" '$1 == t {print $2; exit}' /etc/fstab)
-    sed -i "/^${SHARE_TAG}[[:space:]]/d" /etc/fstab
-    if [[ -n "$old_share_mount" && "$old_share_mount" != "$SHARE_MOUNT" ]]; then
-        umount "$old_share_mount" 2>/dev/null || true
-        rmdir "$old_share_mount" 2>/dev/null || true
-    fi
+# Never mount over a directory that already holds files. The mount would hide
+# them without a word, and the name is common enough that a guest may have one.
+# A directory that is already a share mount is fine: what it shows is the host
+# folder, not the guest's own files.
+share_mount_blocked=0
+if [[ -d "$SHARE_MOUNT" ]] && ! mountpoint -q "$SHARE_MOUNT" \
+        && [[ -n "$(ls -A "$SHARE_MOUNT" 2>/dev/null)" ]]; then
+    share_mount_blocked=1
+    echo "  Not mounting the shared folder over $SHARE_MOUNT: it already contains files." >&2
+    echo "  Move them out, or set SHARE_MOUNT_NAME to another name, then run this again." >&2
 fi
-printf '%s %s virtiofs defaults,nofail,x-systemd.device-timeout=5s 0 0\n' \
-    "$SHARE_TAG" "$SHARE_MOUNT" >> /etc/fstab
-systemctl daemon-reload 2>/dev/null || true
 
-# Mount straight away if the device is attached, so a running guest does not
-# need a reboot. Fails quietly when no folder is attached, which is normal.
-mountpoint -q "$SHARE_MOUNT" || mount "$SHARE_MOUNT" 2>/dev/null || true
+if (( ! share_mount_blocked )); then
+    # The empty mount point is owned by the account too, so it is usable as a
+    # normal directory when no folder is attached. Once mounted, virtiofs shows
+    # the host folder's own owner by numeric ID.
+    install -d -m 0755 -o "$GUEST_USER" -g "$GUEST_USER" "$SHARE_MOUNT"
+
+    # Replace any earlier line for this tag, including /mnt/omavm, where shares were
+    # mounted before they moved into the home directory.
+    if grep -qE "^${SHARE_TAG}[[:space:]]" /etc/fstab; then
+        old_share_mount=$(awk -v t="$SHARE_TAG" '$1 == t {print $2; exit}' /etc/fstab)
+        sed -i "/^${SHARE_TAG}[[:space:]]/d" /etc/fstab
+        if [[ -n "$old_share_mount" && "$old_share_mount" != "$SHARE_MOUNT" ]]; then
+            umount "$old_share_mount" 2>/dev/null || true
+            rmdir "$old_share_mount" 2>/dev/null || true
+        fi
+    fi
+    printf '%s %s virtiofs defaults,nofail,x-systemd.device-timeout=5s 0 0\n' \
+        "$SHARE_TAG" "$SHARE_MOUNT" >> /etc/fstab
+    systemctl daemon-reload 2>/dev/null || true
+
+    # Mount straight away if the device is attached, so a running guest does not
+    # need a reboot. Fails quietly when no folder is attached, which is normal.
+    mountpoint -q "$SHARE_MOUNT" || mount "$SHARE_MOUNT" 2>/dev/null || true
+fi
 # <<< share-mount
 # --------------------------------------------------------------------------
 step "Pinning the DHCP client identifier to the interface MAC"

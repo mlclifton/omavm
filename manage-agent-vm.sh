@@ -20,7 +20,7 @@
 #   clip      Move the clipboard: `clip pull` guest to host, `clip push` back.
 #   paste     Type the host clipboard into the guest, key by key.
 #   sync-ui   Install the current omarchy-ui and skill into a running guest.
-#   sync-share  Mount this VM's shared folder at ~<account>/Project in a running guest.
+#   sync-share  Mount this VM's shared folder at ~<account>/Projects in a running guest.
 #   status    State, address, sizing, share and disk usage for this VM.
 #
 # Base-image commands, accepted only for the reserved VM name `base`:
@@ -519,7 +519,11 @@ stop_stale_seal_server() {
 seal_over_ssh() {
     local work
     work=$(mktemp -d)
-    trap 'rm -rf "$work"' RETURN
+    # Inline the path while it is in scope. A RETURN trap outlives the function
+    # that set it and fires again as each enclosing function returns, where a
+    # local no longer exists, and `set -u` then aborts the script. The handler
+    # also clears itself, so it runs exactly once.
+    trap "rm -rf -- $(printf '%q' "$work"); trap - RETURN" RETURN
 
     stage "Sealing over SSH"
     ok "Guest already reachable at ${VM_IP}, no manual step needed"
@@ -614,7 +618,7 @@ cmd_seal() {
     stage "Serving the seal script to the guest"
     local serve_dir
     serve_dir=$(mktemp -d)
-    trap 'rm -rf "$serve_dir"' RETURN
+    trap "rm -rf -- $(printf '%q' "$serve_dir"); trap - RETURN" RETURN
 
     tar -C "${REPO_DIR}/guest/skills" -czf "${serve_dir}/skills.tar.gz" . \
         || die "Could not package guest/skills"
@@ -624,7 +628,14 @@ cmd_seal() {
     python3 -m http.server "$SEAL_HTTP_PORT" --bind "$HOST_IP" \
         --directory "$serve_dir" &>"${serve_dir}/access.log" &
     local server_pid=$!
-    trap 'kill '"$server_pid"' 2>/dev/null; rm -rf "$serve_dir"' RETURN EXIT INT TERM
+    # Values inlined for the same reason as above. INT and TERM exit as well as
+    # tidy up: a handler that only tidies returns into the wait loop and the
+    # command keeps running.
+    local seal_cleanup
+    seal_cleanup="kill ${server_pid} 2>/dev/null; rm -rf -- $(printf '%q' "$serve_dir"); trap - RETURN EXIT INT TERM"
+    trap "$seal_cleanup" RETURN EXIT
+    trap "${seal_cleanup}; exit 130" INT
+    trap "${seal_cleanup}; exit 143" TERM
 
     local waited=0
     while (( waited < 20 )); do
@@ -1005,7 +1016,11 @@ cmd_sync_share() {
 
     local work
     work=$(mktemp -d)
-    trap 'rm -rf "$work"' RETURN
+    # Inline the path while it is in scope. A RETURN trap outlives the function
+    # that set it and fires again as each enclosing function returns, where a
+    # local no longer exists, and `set -u` then aborts the script. The handler
+    # also clears itself, so it runs exactly once.
+    trap "rm -rf -- $(printf '%q' "$work"); trap - RETURN" RETURN
     {
         echo '#!/usr/bin/env bash'
         echo 'set -uo pipefail'
@@ -1014,6 +1029,7 @@ cmd_sync_share() {
         echo 'HOME_DIR=$(getent passwd "$GUEST_USER" | cut -d: -f6)'
         echo '[[ -d "$HOME_DIR" ]] || { echo "No home directory for $GUEST_USER" >&2; exit 1; }'
         printf '%s\n' "$block"
+        echo 'if (( ${share_mount_blocked:-0} )); then exit 1; fi'
         echo 'if mountpoint -q "$SHARE_MOUNT"; then'
         echo '    echo "  mounted at $SHARE_MOUNT"'
         echo 'else'
